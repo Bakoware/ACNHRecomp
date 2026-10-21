@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# From your own dump to a native build, every stage in order (README, "Setup"). Each stage is skipped when its
+# output is already there, so the script can be run again after a failure or an update of the repository.
+#
+#   usage: tools/setup_acnh.sh --keys <prod.keys> [--title-keys <title.keys>] --base <base.nsp> --update <update.nsp>
+#          tools/setup_acnh.sh                       (later runs: the import is done, the rest is checked)
+#   env:   JOBS=<compile jobs> (default: RAM in GB / 3, at most the core count)   FORCE=<stage> to redo one stage
+#
+# Stages: tools (venv, Vulkan headers, .NET, Ryujinx source, hactool-free importer) -> import -> recompile ->
+# shaders -> build. Everything it writes stays in private/ (gitignored).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+ROOT=$PWD
+P=$ROOT/private
+T=$P/third_party
+G=$P/acnh
+mkdir -p "$P" "$T" "$G/logs"
+
+KEYS="" TKEYS="" BASE="" UPD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --keys) KEYS=$2; shift 2 ;;
+    --title-keys) TKEYS=$2; shift 2 ;;
+    --base) BASE=$2; shift 2 ;;
+    --update) UPD=$2; shift 2 ;;
+    *) echo "unknown argument $1"; exit 1 ;;
+  esac
+done
+
+say() { printf '\n== %s\n' "$*"; }
+need() { command -v "$1" >/dev/null || { echo "missing: $1 (see README, Requirements)"; exit 1; }; }
+force() { [ "${FORCE:-}" = "$1" ]; }
+need clang; need clang++; need curl; need tar; need python3
+
+if [ "$(uname)" = Darwin ]; then
+  NPROC=$(sysctl -n hw.ncpu); RAM=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+else
+  NPROC=$(nproc); RAM=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1048576 ))
+fi
+JOBS=${JOBS:-$(( RAM / 3 > 0 ? RAM / 3 : 1 ))}
+[ "$JOBS" -le "$NPROC" ] || JOBS=$NPROC
+
+# ---- tools ----------------------------------------------------------------------------------------------------
+say "tools"
+if [ ! -x "$P/venv/bin/python" ]; then
+  python3 -m venv "$P/venv" 2>/dev/null || {
+    python3 -m venv --without-pip "$P/venv"
+    curl -sL https://bootstrap.pypa.io/get-pip.py -o "$P/get-pip.py" && "$P/venv/bin/python" "$P/get-pip.py" -q
+  }
+fi
+PY=$P/venv/bin/python
+"$PY" -c "import capstone, lz4, zstandard, fontTools, cmake, ninja" 2>/dev/null ||
+  "$PY" -m pip install -q capstone lz4 zstandard fonttools cmake ninja unicorn
+CMAKE=$P/venv/bin/cmake NINJA=$P/venv/bin/ninja
+VKH=$T/Vulkan-Headers-1.4.357
+[ -d "$VKH" ] || curl -sL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.357.tar.gz | tar -xz -C "$T"
+if [ ! -x "$T/dotnet/dotnet" ]; then
+  mkdir -p "$T/dotnet"
+  case "$(uname)-$(uname -m)" in
+    Linux-x86_64) DN=linux-x64 ;; Linux-aarch64) DN=linux-arm64 ;; Darwin-arm64) DN=osx-arm64 ;; Darwin-x86_64) DN=osx-x64 ;;
+  esac
+  curl -sL "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.401/dotnet-sdk-10.0.401-$DN.tar.gz" | tar -xz -C "$T/dotnet"
+fi
+export DOTNET_ROOT=$T/dotnet PATH=$T/dotnet:$PATH DOTNET_CLI_TELEMETRY_OPTOUT=1
+if [ ! -f "$T/ryubing/Ryujinx.sln" ]; then
+  mkdir -p "$T/ryubing"
+  curl -sL https://codeberg.org/Software_arch/Ryubing/archive/a82350bb77.tar.gz | tar -xz -C "$T/ryubing" --strip-components=1
+fi
+HARNESS=$P/build/spirv_harness/bin/Release/net10.0/spirv_harness.dll
+if [ ! -f "$HARNESS" ] || force harness; then
+  dotnet build tools/maxwell/spirv_harness/SpirvHarness.csproj -c Release -m:4 > "$G/logs/harness.log" 2>&1 ||
+    { tail -20 "$G/logs/harness.log"; exit 1; }
+fi
+if [ ! -x "$P/build/importer/nximport" ]; then
+  CXX=clang++ "$CMAKE" -S tools/importer -B "$P/build/importer" -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" >/dev/null
+  "$NINJA" -C "$P/build/importer" nximport >/dev/null
+fi
+
+# ---- import ---------------------------------------------------------------------------------------------------
+say "import (ExeFS + RomFS with the update applied)"
+if [ ! -f "$G/analysis/main.bin" ] || [ ! -d "$G/extract/romfs/Shader" ] || force import; then
+  [ -n "$KEYS" ] && [ -n "$BASE" ] && [ -n "$UPD" ] || { echo "first run: pass --keys, --base and --update"; exit 1; }
+  # Some key dumps carry entries with odd lengths that the importer does not need: keep only well-formed ones.
+  mkdir -p "$P/keys"
+  "$PY" -I -c '
+import re, sys
+out = []
+for l in open(sys.argv[1], errors="replace"):
+    m = re.match(r"\s*(\w+)\s*=\s*([0-9a-fA-F]+)\s*$", l)
+    if m and len(m.group(2)) % 32 == 0:
+        out.append(f"{m.group(1)} = {m.group(2)}\n")
+open(sys.argv[2], "w").writelines(out)' "$KEYS" "$P/keys/prod.keys"
+  ARGS=("$P/keys/prod.keys")
+  [ -n "$TKEYS" ] && ARGS+=("$TKEYS")
+  "$P/build/importer/nximport" --exefs --title 01006F8002326000 --out "$G" "${ARGS[@]}" "$BASE" "$UPD" \
+    > "$G/logs/import.log" 2>&1 || { tail -5 "$G/logs/import.log"; exit 1; }
+  tail -2 "$G/logs/import.log"
+  cp "$G/analysis/main.npdm" "$G/exefs/" 2>/dev/null || true
+fi
+"$PY" -I -c '
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+print("main.bin", len(d), "bytes")' "$G/analysis/main.bin"
+
+# ---- recompile ------------------------------------------------------------------------------------------------
+say "recompile (main, sdk, subsdk0)"
+recomp() {  # module base
+  local m=$1 b=$2
+  if [ ! -f "$G/gen/$m/table.cpp" ] || [ "recomp/emit.py" -nt "$G/gen/$m/table.cpp" ] || force recomp; then
+    "$PY" -m recomp "$G/exefs/$m" "$G/gen/$m" --name "$m" --base "$b" > "$G/logs/recomp_$m.log" 2>&1
+  fi
+  tail -1 "$G/logs/recomp_$m.log"
+}
+recomp sdk 0x4010000000
+recomp subsdk0 0x4018000000
+recomp main 0x4000000000
+
+# ---- shaders --------------------------------------------------------------------------------------------------
+say "shaders (Maxwell -> SPIR-V)"
+if [ ! -f "$G/spirv/summary.txt" ] || force shaders; then
+  JOBS=$NPROC tools/extract_shaders.sh "$G"
+  VAL=(--no-val); command -v spirv-val >/dev/null && VAL=(--spirv-val "$(command -v spirv-val)")
+  dotnet "$HARNESS" --batch "$G/shaders_extracted" --out "$G/spirv" --jobs "$NPROC" "${VAL[@]}" > "$G/logs/spirv.log" 2>&1
+fi
+head -1 "$G/spirv/summary.txt"
+
+# ---- fonts ----------------------------------------------------------------------------------------------------
+mkdir -p "$G/fonts"
+# Stand-in for the Switch's button-icon font (type 5), drawn over a host font. The other shared fonts fall back
+# to host fonts (runtime/src/hle_pl.cpp); ACNH ships its own fonts in its RomFS for almost all text.
+if [ ! -f "$G/fonts/shared_5.ttf" ]; then
+  for f in /System/Library/Fonts/Supplemental/Arial\ Unicode.ttf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+           /usr/share/fonts/TTF/DejaVuSans.ttf /usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf; do
+    [ -f "$f" ] && { "$PY" tools/fonts/make_button_font.py --base "$f" --out "$G/fonts/shared_5.ttf" >/dev/null; break; }
+  done
+fi
+
+# ---- build ----------------------------------------------------------------------------------------------------
+say "build (-j$JOBS; the first build takes 40-90 minutes)"
+EXTRA=()
+[ "$(uname)" = Darwin ] && EXTRA+=(-DCMAKE_PREFIX_PATH="$(brew --prefix 2>/dev/null || echo /opt/homebrew)")
+CC=clang CXX=clang++ "$CMAKE" -S . -B "$G/build" -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" -DNX_GAME=acnh \
+  -DCMAKE_BUILD_TYPE=Release -DNX_VULKAN_INCLUDE="$VKH/include" "${EXTRA[@]}" > "$G/logs/cmake.log"
+"$NINJA" -C "$G/build" -j"$JOBS" acnh
+say "done: tools/acnh_linux.sh   (macOS: tools/acnh_mac.sh)"
