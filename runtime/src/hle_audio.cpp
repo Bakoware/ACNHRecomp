@@ -179,8 +179,16 @@ void CreateAudioRendererManagerByHipc(CPU& c) {
 // the frame's commands and runs the sdk's own DSP command processor on the calling thread, and its render system
 // (impl + 0x60) signals its own event, which has no kernel object in process. A guest thread of ours renders every
 // 5 ms and signals the game's event itself, then sends the frame's final mix to the host device.
-constexpr uint64_t kRendererVtable = 0xd04910;     // sdk: vtable of the sf object wrapping AudioRendererImpl
-constexpr uint64_t kExecuteRendering = 0x20cac8;   // sdk: AudioRendererImpl::ExecuteAudioRendererRendering
+// Wonder's sdk (SDK 16.2) has no symbols for these, so they were fixed offsets; SDK 20 (ACNH) exports both, and the
+// symbol wins when it is there.
+constexpr uint64_t kRendererVtable = 0xd04910;     // sdk 16.2: vtable of the sf object wrapping AudioRendererImpl
+constexpr uint64_t kExecuteRendering = 0x20cac8;   // sdk 16.2: AudioRendererImpl::ExecuteAudioRendererRendering
+constexpr const char* kRendererVtableSym =
+    "_ZTVN2nn2sf6detail38ObjectImplFactoryWithStatefulAllocatorINS0_13InterfaceInfoINS_5audio6detail14IAudioRenderer"
+    "EE4_tABINS7_5_tO2NINS4_6server24AudioRendererManagerImpl17AudioRendererImplEE4typeES6_E4typeENS0_24StatefulAllocat"
+    "ionPolicyINS0_16ExpHeapAllocatorEEEE6ObjectE";
+constexpr const char* kExecuteRenderingSym =
+    "_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv";
 
 // The in-process render system hands the client a readable handle of 0 for the renderer's event (there is no
 // kernel event behind it), so the SystemEvent the game waits on is ours: an InterProcessEventType keeps its
@@ -198,10 +206,20 @@ uint64_t sdk_base() {
     return base;
 }
 
+uint64_t renderer_vtable() {
+    static uint64_t v = [] { uint64_t a = find_symbol(kRendererVtableSym); return a ? a : sdk_base() + kRendererVtable; }();
+    return v;
+}
+
+uint64_t execute_rendering() {
+    static uint64_t f = [] { uint64_t a = find_symbol(kExecuteRenderingSym); return a ? a : sdk_base() + kExecuteRendering; }();
+    return f;
+}
+
 // The AudioRendererImpl behind an AudioRendererHandle: an sf object whose vtable pointer is that one, within two
 // pointer hops of the handle.
 uint64_t find_renderer(uint64_t handle) {
-    uint64_t vptr = sdk_base() + kRendererVtable + 0x10;
+    uint64_t vptr = renderer_vtable() + 0x10;
     auto valid = [](uint64_t p) { return p >= kModuleBase && p < kKernelBase + kKernelSize && (p & 7) == 0; };
     for (uint64_t a = 0; a < 0x40; a += 8) {
         uint64_t p = ld<uint64_t>(handle + a);
@@ -223,7 +241,34 @@ uint64_t find_renderer(uint64_t handle) {
 // 5 ms frame to s16 stereo and queues it on the device. Command header: {u32 magic 0xcafebabe; u8 enabled; s8 id;
 // s16 size; u32 estimated time}. DeviceSink (CommandBuffer::Generate<DeviceSink>, sdk+211e10): +0x128 the mix
 // buffers (or the upsampler's), +0x130 input count, +0x134 s16 buffer index per input.
-constexpr uint8_t kCmdDownMix6chTo2ch = 17, kCmdDeviceSink = 19;
+constexpr uint8_t kCmdDownMix6chTo2ch = 17, kCmdDeviceSink = 19;  // SDK 16.2
+
+// Command ids moved in later SDKs (20.5: DeviceSink is 20, same layout). CommandGenerator::GenerateDeviceSinkCommand
+// ends by calling CommandBuffer's generator, which writes the header: `mov w8, #id` then `strb w8, [x20, #5]`.
+// The id is read from there; DownMix6chTo2ch keeps its distance to it (two below).
+uint8_t device_sink_id() {
+    static uint8_t id = [] {
+        uint64_t f = find_symbol("_ZN2nn5audio6server16CommandGenerator25GenerateDeviceSinkCommandEiPNS1_12SinkInfoBaseE");
+        if (!f) return kCmdDeviceSink;
+        uint64_t gen = 0;
+        for (uint64_t pc = f; pc < f + 0x100; pc += 4) {
+            uint32_t w = ld<uint32_t>(pc);
+            if ((w & 0xFC000000) == 0x94000000) gen = pc + uint64_t(int64_t(int32_t(w << 6) >> 4));  // bl
+            if (w == 0xD65F03C0) break;                                                           // ret
+        }
+        uint32_t last = ~0u;
+        for (uint64_t pc = gen; gen && pc < gen + 0x80; pc += 4) {
+            uint32_t w = ld<uint32_t>(pc);
+            if ((w & 0xFFE0001F) == 0x52800008) last = (w >> 5) & 0xFFFF;  // mov w8, #imm16
+            if (w == 0x39001688 && last < 0x100) {                           // strb w8, [x20, #5]
+                log("audio: DeviceSink command id %u", last);
+                return uint8_t(last);
+            }
+        }
+        return kCmdDeviceSink;
+    }();
+    return id;
+}
 constexpr int kFrame = 240;          // samples per 5 ms at 48 kHz
 constexpr int kBlocks = 64;          // 320 ms of output blocks
 constexpr uint32_t kMaxQueued = 12;  // 60 ms in the device queue: past that, frames are dropped
@@ -265,8 +310,8 @@ void capture_device_sink(uint64_t proc) {  // proc: nn::audio::dsp::CommandListP
     for (uint32_t i = 0; i < count && ld<uint32_t>(cmd) == 0xcafebabe; i++, cmd += ld<int16_t>(cmd + 6)) {
         if (!ld<uint8_t>(cmd + 4)) continue;
         uint8_t id = ld<uint8_t>(cmd + 5);
-        if (id == kCmdDownMix6chTo2ch) downmixed = true;
-        if (id != kCmdDeviceSink) continue;
+        if (id == device_sink_id() - (kCmdDeviceSink - kCmdDownMix6chTo2ch)) downmixed = true;
+        if (id != device_sink_id()) continue;
         uint64_t buffers = ld<uint64_t>(cmd + 0x128);
         uint32_t inputs = ld<uint32_t>(cmd + 0x130);
         static bool once = false;
@@ -418,7 +463,7 @@ void audio_render_thread(CPU& c) {
             std::memcpy(saved, c.x, sizeof saved);
             c.x[0] = impl;
             std::lock_guard lk(g_render_system);
-            call(c, sdk_base() + kExecuteRendering);
+            call(c, execute_rendering());
             last_rc = c.x[0];
             std::memcpy(c.x, saved, sizeof saved);
             std::lock_guard pk(g_pace_lock);  // counted under the render lock (AudioRenderSystemUpdate)
@@ -476,10 +521,21 @@ void OpenAudioRenderer(CPU& c) {
     // opens the renderer in the automatic mode, where the ADSP renders on its own. Our 5 ms thread is that ADSP, so
     // the renderer is switched to manual/CPU; otherwise every call failed with 0x40299 and nothing was ever rendered
     // (streamed music never advanced, and the opening cutscene waited for it forever).
+    // Where the two fields are moves between SDKs (16.2: +0x2d0; 20.5: +0x48): AudioRenderSystem::
+    // ExecuteAudioRendererRendering starts by loading both with `ldp w8, w9, [x0, #off]`, so the offset is read
+    // from that instruction. Writing at a stale offset corrupts the render system (a mutex: StartAudioRenderer then
+    // deadlocks).
     uint64_t system = impl + 0x60;
-    log("audio: execution mode %u, rendering device %u -> 1, 1", ld<uint32_t>(system + 0x2d0), ld<uint32_t>(system + 0x2d4));
-    st<uint32_t>(system + 0x2d0, 1);
-    st<uint32_t>(system + 0x2d4, 1);
+    uint64_t mode_off = 0x2d0;
+    if (uint64_t f = find_symbol("_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv")) {
+        uint32_t w = ld<uint32_t>(f);
+        if ((w & 0xFFC003E0) == 0x29400000)  // ldp wT1, wT2, [x0, #imm7 * 4]
+            mode_off = uint64_t(int64_t(int32_t(w << 10) >> 25) * 4);
+    }
+    log("audio: execution mode %u, rendering device %u (render system +%#llx) -> 1, 1",
+        ld<uint32_t>(system + mode_off), ld<uint32_t>(system + mode_off + 4), (unsigned long long)mode_off);
+    st<uint32_t>(system + mode_off, 1);
+    st<uint32_t>(system + mode_off + 4, 1);
     {
         std::lock_guard lk(g_renderers_lock);
         g_renderers.push_back(impl);

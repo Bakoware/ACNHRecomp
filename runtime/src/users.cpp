@@ -38,6 +38,17 @@ void save_locked() {
     for (auto& u : g_users) f << hex_uid(u.lo, u.hi) << ' ' << u.nickname << '\n';
 }
 
+// The first user's nickname: NX_USER_NAME, else the host account's name, else "Player" (at most 10 characters,
+// what the console allows).
+std::string default_user_name() {
+    const char* n = std::getenv("NX_USER_NAME");
+    if (!n || !*n) n = std::getenv("USER");
+    if (!n || !*n) n = std::getenv("USERNAME");
+    std::string s = n && *n ? n : "Player";
+    if (s.size() > 10) s.resize(10);
+    return s;
+}
+
 void load_locked() {
     if (g_loaded) return;
     g_loaded = true;
@@ -58,7 +69,7 @@ void load_locked() {
         if (u.valid() && g_users.size() < kMaxUsers) g_users.push_back(u);
     }
     if (g_users.empty()) {
-        g_users.push_back({kFirstLo, kFirstHi, "Zagreus"});
+        g_users.push_back({kFirstLo, kFirstHi, default_user_name()});
         save_locked();
         log("users: created %s with the first user", users_path().string().c_str());
     }

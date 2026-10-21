@@ -189,6 +189,8 @@ void pool_unregister(MemoryPool* pool);
 
 struct GpuImage;  // the Vulkan side of a texture (nvn_vk.cpp)
 
+void debug_log_texture(const char* what, uint64_t guest);  // nvn_debug.cpp
+
 struct Texture : Object {
     uint32_t target = 0, format = 0, flags = 0, levels = 0, samples = 0, depth_stencil_mode = 0;
     uint32_t width = 0, height = 0, depth = 0, stride = 0;

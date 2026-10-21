@@ -23,7 +23,10 @@ grp() { local f=$1 p=$2 b; b=$(basename "$f"); b=${b%%.*}; echo "${p}_$b $f"; }
 {
   for f in "$R"/Shader/*; do grp "$f" shader; done            # Park_UBER_All (bfsha), Park_Proc (agl BAHS), apkg
   for f in "$R"/Effect/*; do grp "$f" effect; done            # VFXB with GRSR/GRSC BNSH
-  for f in "$R"/System/GSys/*; do grp "$f" gsys; done
+  # System/: GSys and Agl resources (BAHS), the font and primitive renderer shaders (bare BNSH). The font shaders
+  # and the primitive drawer hold the vertex shader of the final full-screen pass: without them nothing reaches
+  # the window.
+  find "$R"/System -type f | while read -r f; do grp "$f" "system_$(basename "$(dirname "$f")")"; done
   for f in "$R"/Swkbd/shader/*_Nx.arc.szs; do grp "$f" swkbd; done
   for f in "$R"/Layout/*; do grp "$f" layout; done            # 960 Ui2d archives, ~200 with bgsh
   if [ "${FULL:-0}" = 1 ]; then for f in "$R"/Model/*; do grp "$f" model; done; fi

@@ -215,6 +215,19 @@ void debug_dump_requested(uint64_t n) {
     if (n && every && n % every == 0) debug_dump_textures(n);
 }
 
+// One texture's registry entry, for bring-up logs.
+void debug_log_texture(const char* what, uint64_t guest) {
+    Texture* t = get<Texture>(guest);
+    if (!t) {
+        log("nvn: %s texture %llx: not registered", what, (unsigned long long)guest);
+        return;
+    }
+    log("nvn: %s texture %llx: %ux%ux%u fmt %#x target %u levels %u samples %u flags %#x memory %llx pool %llx +%llx image %p",
+        what, (unsigned long long)guest, t->width, t->height, t->depth, t->format, t->target, t->levels, t->samples, t->flags,
+        (unsigned long long)t->memory, (unsigned long long)t->pool, (unsigned long long)t->offset,
+        static_cast<void*>(t->image.get()));
+}
+
 // ---- presented frames (NX_DUMP_FRAMES=N) ----------------------------------------------------------------------------
 // Every Nth presented texture is read back and written to <data root>/frames/NNNNN.ppm (what the game drew,
 // independent of the window). The copy is recorded into the present's command buffer, written after its fence.

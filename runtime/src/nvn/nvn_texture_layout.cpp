@@ -2,13 +2,15 @@
 // aligned. The SDK driver computes this through its device's surface-layout object, which only its own
 // nvnDeviceInitialize (talking to the GPU kernel driver) sets up, so we compute it here: Maxwell block-linear.
 //
-// Format facts come from the driver's own format table (sdk+0xd34198 in SDK 16.2, 0x30 bytes per NVNformat):
+// Format facts come from the driver's own format table (sdk+0xd34198 in SDK 16.2, sdk+0xb7f7d8 in SDK 20.5 (ACNH);
+// 0x30 bytes per NVNformat; found by its contents, see find_format_table):
 //   word 2: block width (byte 0), block height (byte 1); word 4: bytes per block (byte 0).
 // Block linear: the image is cut into GOBs of 64 bytes x 8 rows; GOBs stack vertically into blocks of
 // 1..16 GOBs (the block height, picked per mip level from the level's height); a level's rows of blocks are
 // 64-byte aligned in width and block-aligned in height. Pre-tiled data (BNTX) is laid out the same way, so the
 // sizes must not come out smaller than the real driver's.
 #include <algorithm>
+#include <cstdlib>
 
 #include "nvn.h"
 
@@ -16,22 +18,50 @@ namespace nx::nvn {
 
 namespace {
 
-constexpr uint64_t kFormatTable = 0xd34198;  // in sdk (SDK 16.2)
+constexpr uint64_t kFormatTable = 0xd34198;  // in sdk (SDK 16.2); other SDKs: find_format_table
 constexpr uint32_t kFormatCount = 0xd0;
 
 struct FormatInfo {
     uint32_t block_w = 1, block_h = 1, bytes = 4;
 };
 
+// The table moves with every SDK, so it is looked for by what it holds: entry 0 (NONE) has no bytes, R8 (1) is
+// one 1x1 block of 1 byte, RGBA8 (0x25) 1x1 of 4, BC1/DXT1 (0x42) 4x4 of 8. The SDK 16.2 offset is tried first.
+uint64_t find_format_table(const LoadedModule& m) {
+    auto entry = [](uint64_t t, uint32_t f, uint32_t& bw, uint32_t& bh, uint32_t& bytes) {
+        const uint32_t* e = reinterpret_cast<const uint32_t*>(t + uint64_t(f) * 0x30);
+        bw = e[2] & 0xFF, bh = (e[2] >> 8) & 0xFF, bytes = e[4] & 0xFF;
+    };
+    auto matches = [&](uint64_t t) {
+        if (t + uint64_t(kFormatCount) * 0x30 > m.base + m.size) return false;
+        uint32_t w, h, b;
+        entry(t, 0, w, h, b);
+        if (b != 0) return false;
+        entry(t, 1, w, h, b);
+        if (w != 1 || h != 1 || b != 1) return false;
+        entry(t, 0x25, w, h, b);
+        if (w != 1 || h != 1 || b != 4) return false;
+        entry(t, 0x42, w, h, b);
+        return w == 4 && h == 4 && b == 8;
+    };
+    if (matches(m.base + kFormatTable)) return m.base + kFormatTable;
+    for (uint64_t t = m.base; t + uint64_t(kFormatCount) * 0x30 <= m.base + m.size; t += 8)
+        if (matches(t)) {
+            log("nvn: format table at %s", describe(t).c_str());
+            return t;
+        }
+    log("nvn: format table not found: texture sizes fall back to 4 bytes per pixel");
+    return 0;
+}
+
 FormatInfo format_info(uint32_t format) {
-    static uint64_t sdk = [] {
-        uint64_t loader = find_symbol("nvnBootstrapLoader");
-        const LoadedModule* m = module_at(loader);
-        return m ? m->base : 0;
+    static uint64_t table = [] {
+        const LoadedModule* m = module_at(find_symbol("nvnBootstrapLoader"));
+        return m ? find_format_table(*m) : 0;
     }();
     FormatInfo f;
-    if (!sdk || format >= kFormatCount) return f;
-    const uint32_t* e = reinterpret_cast<const uint32_t*>(sdk + kFormatTable + uint64_t(format) * 0x30);
+    if (!table || format >= kFormatCount) return f;
+    const uint32_t* e = reinterpret_cast<const uint32_t*>(table + uint64_t(format) * 0x30);
     uint32_t bw = e[2] & 0xFF, bh = (e[2] >> 8) & 0xFF, bytes = e[4] & 0xFF;
     if (bw && bh && bytes) f = {bw, bh, bytes};
     return f;
@@ -82,7 +112,20 @@ Layout compute(CPU& c, uint64_t builder) {
     return l;
 }
 
-void GetStorageSize(CPU& c) { c.x[0] = compute(c, c.x[0]).size; }            // size_t (const NVNtextureBuilder*)
+void GetStorageSize(CPU& c) {  // size_t (const NVNtextureBuilder*)
+    static const bool trace = std::getenv("NX_TRACE_TEXTURE_SIZES") != nullptr;
+    uint64_t b = c.x[0];
+    c.x[0] = compute(c, b).size;
+    if (trace && c.x[0] >= 0x100000) {
+        uint64_t size = c.x[0];
+        log("nvn: storage %llx bytes: %ux%ux%u fmt %#x levels %u samples %u target %u stride %u", (unsigned long long)size,
+            uint32_t(driver(c, "nvnTextureBuilderGetWidth", {b})), uint32_t(driver(c, "nvnTextureBuilderGetHeight", {b})),
+            uint32_t(driver(c, "nvnTextureBuilderGetDepth", {b})), uint32_t(driver(c, "nvnTextureBuilderGetFormat", {b})),
+            uint32_t(driver(c, "nvnTextureBuilderGetLevels", {b})), uint32_t(driver(c, "nvnTextureBuilderGetSamples", {b})),
+            uint32_t(driver(c, "nvnTextureBuilderGetTarget", {b})), uint32_t(driver(c, "nvnTextureBuilderGetStride", {b})));
+        c.x[0] = size;
+    }
+}
 void GetStorageAlignment(CPU& c) { c.x[0] = compute(c, c.x[0]).alignment; }  // size_t (const NVNtextureBuilder*)
 void GetStorageClass(CPU& c) { c.x[0] = 0; }  // NVNstorageClass: only matters for compression / sparse tiles
 

@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -327,7 +328,16 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
     std::vector<std::shared_ptr<KObject>> objs;
     for (int i = 0; i < count; i++) {
         auto o = handle_get(ld<uint32_t>(handles + 4 * i));
-        if (!o) return 0xE401;  // invalid handle
+        if (!o) {  // invalid handle: usually an event a stubbed service command never handed out
+            static std::set<uint32_t> seen;
+            if (seen.insert(ld<uint32_t>(handles + 4 * i)).second)
+            {
+                log("svcWaitSynchronization: invalid handle %x (lr %s)", ld<uint32_t>(handles + 4 * i),
+                    describe(c.x[30]).c_str());
+                backtrace(c);
+            }
+            return 0xE401;
+        }
         objs.push_back(o);
     }
     auto ready = [&]() -> int {
@@ -438,6 +448,7 @@ static void svc_impl(CPU& c, uint32_t imm, uint64_t pc) {
             if (size > g_heap_size) commit(kHeapBase + g_heap_size, size - g_heap_size);
             vm_set(kHeapBase, kHeapMax, kMemInaccessible, 0);
             if (size) vm_set(kHeapBase, size, kMemHeap, 3);
+            if (size != g_heap_size) log("svcSetHeapSize(%#llx) from %s", (unsigned long long)size, describe(c.x[30]).c_str());
             g_heap_size = size;
             c.x[1] = kHeapBase;
             break;

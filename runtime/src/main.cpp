@@ -51,7 +51,18 @@ void msr(CPU& c, uint32_t sysreg, uint64_t value) {
 // a TLS allocator (SetMemoryAllocatorForThreadLocal, in nninitStartup), so rtld's initializer callback does nothing
 // and the modules are initialized right before nnMain, SDK first. Static TLS itself comes from the kernel
 // (kernel.cpp: a block per thread at TLS region +0x1F0, where nn::os loads TPIDR_EL0 from).
-constexpr uint64_t kDtInit = 0x30;
+// DT_INIT sat at +0x30 in SDK 9 and 16 modules; SDK 20 moved it (ACNH: main +0x10, sdk +0x400, subsdk0 +0x20), so it
+// is read from the module's .dynamic: the MOD0 header (offset at image +4) gives .dynamic relative to itself.
+static uint64_t dt_init(const ModuleInfo& m) {
+    uint64_t mod0 = m.base + ld<uint32_t>(m.base + 4);
+    uint64_t dyn = mod0 + int64_t(ld<int32_t>(mod0 + 4));
+    for (uint64_t p = dyn;; p += 16) {
+        int64_t tag = ld<int64_t>(p);
+        if (tag == 0) break;
+        if (tag == 12) return m.base + ld<uint64_t>(p + 8);  // DT_INIT
+    }
+    return m.base + 0x30;
+}
 
 static void call_preserving(CPU& c, uint64_t target) {
     uint64_t saved[13];
@@ -65,7 +76,8 @@ static void call_preserving(CPU& c, uint64_t target) {
 // that load.
 static uint64_t init_status_addr(const ModuleInfo& m) {
     uint64_t page[32] = {};
-    for (uint64_t pc = m.base + kDtInit; pc < m.base + kDtInit + 0x40; pc += 4) {
+    const uint64_t init = dt_init(m);
+    for (uint64_t pc = init; pc < init + 0x40; pc += 4) {
         uint32_t w = ld<uint32_t>(pc);
         if ((w & 0x9F000000) == 0x90000000) {  // adrp
             int64_t imm = int64_t(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)) << 43 >> 31;  // sign-extended << 12
@@ -82,7 +94,8 @@ static uint64_t init_status_addr(const ModuleInfo& m) {
 // sdk empty). Returns false when the pattern is not there (SDK 9 modules have no .tdata to worry about).
 static bool tdata_range(const ModuleInfo& m, uint64_t& start, uint64_t& end) {
     uint64_t page[32] = {}, lo = ~0ull, hi = 0;
-    for (uint64_t pc = m.base + kDtInit; pc < m.base + kDtInit + 0x100; pc += 4) {
+    const uint64_t init = dt_init(m);
+    for (uint64_t pc = init; pc < init + 0x100; pc += 4) {
         uint32_t w = ld<uint32_t>(pc);
         if ((w & 0x9F000000) == 0x90000000) {  // adrp
             int64_t imm = int64_t(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)) << 43 >> 31;
@@ -98,7 +111,7 @@ static bool tdata_range(const ModuleInfo& m, uint64_t& start, uint64_t& end) {
 }
 
 static void init_module(CPU& c, const ModuleInfo& m) {
-    call_preserving(c, m.base + kDtInit);
+    call_preserving(c, dt_init(m));
     uint32_t status = ld<uint32_t>(init_status_addr(m));
     if (status == 1)
         for (size_t k = 0; k < m.init_count; k++) call_preserving(c, m.base + m.init_array[k]);

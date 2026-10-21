@@ -202,6 +202,39 @@ void ShowControllerSupport(CPU& c) {                     // (ControllerSupportRe
 }
 void noop(CPU& c) { c.x[0] = 0; }
 
+// ---- first needed by ACNH (SDK 20) ----
+
+// TouchScreenState<N> {s64 sampling; s32 count; u32 reserved; TouchState touches[N]} (TouchState: 0x28 bytes).
+// No touch screen on the PC: one state with no touches.
+void GetTouchScreenState1(CPU& c) {
+    std::memset(reinterpret_cast<void*>(c.x[0]), 0, 0x10 + 0x28);
+    st<int64_t>(c.x[0], int64_t(g_sampling));
+}
+
+void GetTouchScreenStates16(CPU& c) {  // int (TouchScreenState<16>*, int count)
+    if (int(c.x[1]) < 1) {
+        c.x[0] = 0;
+        return;
+    }
+    std::memset(reinterpret_cast<void*>(c.x[0]), 0, 0x10 + 0x28 * 16);
+    st<int64_t>(c.x[0], int64_t(g_sampling));
+    c.x[0] = 1;
+}
+
+// BitFlagSet<32, NpadStyleTag> GetSupportedNpadStyleSet(): full key, handheld, dual and single Joy-Cons.
+void GetSupportedNpadStyleSet(CPU& c) { c.x[0] = 0x1F; }
+
+// Result GetNpadControllerColor(NpadControllerColor* left/main, NpadControllerColor* right/sub, const u32& id):
+// {u32 main, u32 sub} as RGBA8. A Pro Controller: dark grey body, black buttons.
+void GetNpadControllerColor(CPU& c) {
+    for (uint64_t p : {c.x[0], c.x[1]})
+        if (p) st<uint32_t>(p, 0xFF2D2D2D), st<uint32_t>(p + 4, 0xFF0F0F0F);
+    c.x[0] = 0;
+}
+
+// Bit pattern of the player LEDs: player 1 is the first LED.
+void GetPlayerLedPattern(CPU& c) { c.x[0] = 1; }
+
 }  // namespace
 
 NX_HLE("_ZN2nn3hid14InitializeNpadEv", noop);
@@ -234,6 +267,15 @@ NX_HLE("_ZN2nn3hid21StartLrAssignmentModeEv", noop);
 NX_HLE("_ZN2nn3hid20StopLrAssignmentModeEv", noop);
 NX_HLE("_ZN2nn3hid20GetNpadJoyAssignmentERKj", zero);  // dual
 NX_HLE("_ZN2nn3hid20IsVibrationPermittedEv", one);
+NX_HLE("_ZN2nn3hid21InitializeTouchScreenEv", noop);
+NX_HLE("_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE", GetTouchScreenState1);
+NX_HLE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi", GetTouchScreenStates16);
+NX_HLE("_ZN2nn3hid24GetSupportedNpadStyleSetEv", GetSupportedNpadStyleSet);
+NX_HLE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorES2_RKj", GetNpadControllerColor);
+NX_HLE("_ZN2nn3hid19GetPlayerLedPatternERKj", GetPlayerLedPattern);
+NX_HLE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE", noop);
+NX_HLE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", noop);
+NX_HLE("_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_", noop);
 NX_HLE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", noop);
 NX_HLE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", noop);
 NX_HLE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", noop);

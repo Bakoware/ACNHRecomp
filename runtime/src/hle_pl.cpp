@@ -88,8 +88,33 @@ void GetSharedFontLoadState(CPU& c) { c.x[0] = 1; }  // SharedFontLoadState_Load
 void GetSharedFontAddress(CPU& c) { c.x[0] = font(uint32_t(c.x[0])).addr; }
 void GetSharedFontSize(CPU& c) { c.x[0] = font(uint32_t(c.x[0])).size; }
 
+// Result GetSharedFont(int* count, SharedFontData* out, int max, settings::LanguageCode) (SDK 20, ACNH): every
+// shared font in the order of priority for the language, as SharedFontData {SharedFontType type; const void*
+// address; size_t size} (0x18 bytes). Western order: standard, the Chinese and Korean sets, then the Nintendo
+// extension (button icons).
+void GetSharedFont(CPU& c) {
+    static const uint32_t kOrder[] = {0, 1, 2, 3, 4, 5};
+    uint64_t count = c.x[0], out = c.x[1];
+    int max = int(c.x[2]), n = 0;
+    for (uint32_t type : kOrder) {
+        if (n >= max) break;
+        const Font& f = font(type);
+        st<uint32_t>(out + 0x18ull * n, type);
+        st<uint32_t>(out + 0x18ull * n + 4, 0);
+        st<uint64_t>(out + 0x18ull * n + 8, f.addr);
+        st<uint64_t>(out + 0x18ull * n + 0x10, f.size);
+        n++;
+    }
+    if (count) st<int32_t>(count, n);
+    c.x[0] = 0;
+}
+
+void RequestSharedFontLoad(CPU& c) { c.x[0] = 0; }  // already loaded
+
 }  // namespace
 
+NX_HLE("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE", GetSharedFont);
+NX_HLE("_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", RequestSharedFontLoad);
 NX_HLE("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", GetSharedFontLoadState);
 NX_HLE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", GetSharedFontAddress);
 NX_HLE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", GetSharedFontSize);

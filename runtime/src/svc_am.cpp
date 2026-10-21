@@ -223,6 +223,15 @@ std::shared_ptr<Service> library_applet_creator() {
 
 std::shared_ptr<Service> application_functions() {
     return svc("IApplicationFunctions", [](Service& s) {
+        // 210 (SDK 20): an event nn::oe polls with TryWait every time the game asks for the operation mode. Never
+        // signalled: the mode does not change under the game. Without a real handle, TryWait spins forever (it
+        // retries until the wait times out, and an invalid handle never does).
+        s.cmds[210] = [](IpcCtx& c) {
+            static std::shared_ptr<EventState> ev = std::make_shared<EventState>();
+            c.out_copy.push_back(event_handle(ev));
+            log("am: IApplicationFunctions 210 -> event handle %x", c.out_copy.back());
+            return 0u;
+        };
         s.cmds[1] = [](IpcCtx& c) {  // PopLaunchParameter(kind): the preselected user, once
             static bool popped = false;
             if (c.arg<uint32_t>(0) != 2 || popped) return 0x2A80u;
@@ -249,7 +258,6 @@ std::shared_ptr<Service> application_functions() {
             c.out_copy.push_back(event_handle(std::make_shared<EventState>()));
             return 0u;
         };
-        s.cmds[210] = [](IpcCtx&) { return 0u; };  // UnsetGameCardEject... (stub)
     });
 }
 

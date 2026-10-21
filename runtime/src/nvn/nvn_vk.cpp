@@ -621,6 +621,24 @@ void present_headless(uint64_t texture) {
     // NX_PRESENT_TEST_ALL=1 (with NX_PRESENT_TEST): the present pass runs for every frame, and its submit is timed.
     static const bool every = std::getenv("NX_PRESENT_TEST_ALL") != nullptr;
     bool due = frame_dump_due(presents);
+    if (due && (!src || src->layout == VK_IMAGE_LAYOUT_UNDEFINED))
+    {
+        log("nvn/vk: frame dump %llu skipped: the presented texture %llx was never drawn into",
+            (unsigned long long)presents, (unsigned long long)texture);
+        static int detail = 0;
+        if (detail++ < 3) {
+            debug_log_texture("presented", texture);
+            // NX_DEBUG_TEXTURES=<hex>,<hex>: other textures to compare with (render targets seen in NX_TRACE_DRAWS)
+            if (const char* e = std::getenv("NX_DEBUG_TEXTURES"))
+                for (const char* p = e; *p;) {
+                    char* end = nullptr;
+                    uint64_t g = std::strtoull(p, &end, 16);
+                    if (end == p) break;
+                    debug_log_texture("listed", g);
+                    p = *end == ',' ? end + 1 : end;
+                }
+        }
+    }
     if (!due && !every) return;
     static uint64_t timed_ns = 0, timed = 0;
     const uint64_t t0 = plat::monotonic_ns();

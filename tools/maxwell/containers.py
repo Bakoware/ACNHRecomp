@@ -451,9 +451,26 @@ def sarc_files(d, base):
     return out
 
 
+def parse_sample_pair(d, base, size, path):
+    """The SDK's sample-library shader files (ACNH: System/Font/nvn_font_shader_*.bin,
+    System/PrimitiveRenderer/primitive_drawer_nvn_shader.bin): four u32 offsets {vertex control, pixel control,
+    vertex code, pixel code}, then the blocks. A code block's size is in its control section (+0x704)."""
+    vctrl, fctrl, vcode, fcode = (u32(d, base + 4 * k) for k in range(4))
+    c = Container("NVNPAIR", path, base, size)
+    stages = []
+    for kind, ctrl, code, ctrl_end in (("vertex", vctrl, vcode, fctrl), ("pixel", fctrl, fcode, vcode)):
+        code_size = u32(d, base + ctrl + 0x704)
+        stages.append(Stage(f"{path}/{kind}", kind, base + code, code_size, base + ctrl, ctrl_end - ctrl, d))
+    c.programs.append(("program", stages))
+    c.variations = 1
+    return c
+
+
 def open_blob(d, base, size, path, reflect=False):
     """Recognise what is at `base` and return a Container (with children), or None."""
     magic = bytes(d[base:base + 8])
+    if size >= 0x20 and u32(d, base) == 0x10 and u32(d, base + 0x10) == CONTROL_MAGIC:
+        return parse_sample_pair(d, base, size, path)
     if magic[:4] == b"Yaz0":
         # ACNH nests Yaz0 inside SARC (.szs members): decompress into a buffer of its own.
         sub = yaz0.decompress(d[base:base + size])
