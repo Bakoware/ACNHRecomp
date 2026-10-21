@@ -301,7 +301,21 @@ void CommandBufferEndRecording(CPU& c) {  // NVNcommandHandle
     c.x[0] = h;
 }
 
+// NX_TRACE_RECORD=<presented frame>: from that frame, the next 400 target / clear / scissor / viewport calls as the
+// game records them (command buffer, arguments, caller), to compare with the replay's passes (NX_TRACE_PASSES).
+bool trace_record() {
+    static const char* e = std::getenv("NX_TRACE_RECORD");
+    static const uint64_t from = e ? std::strtoull(e, nullptr, 10) : 0;
+    static std::atomic<int> n{0};
+    return e && g_frame >= from && n++ < 400;
+}
+
 void SetRenderTargets(CPU& c) {
+    if (trace_record())
+        log("rec %llx SetRenderTargets n %llu: %llx %llx depth %llx (lr %s)", (unsigned long long)c.x[0],
+            (unsigned long long)c.x[1], (unsigned long long)(c.x[2] && c.x[1] ? ld<uint64_t>(c.x[2]) : 0),
+            (unsigned long long)(c.x[2] && c.x[1] > 1 ? ld<uint64_t>(c.x[2] + 8) : 0), (unsigned long long)c.x[4],
+            describe(c.x[30]).c_str());
     Cmd cmd{Cmd::SetRenderTargets};
     uint32_t n = std::min<uint32_t>(uint32_t(c.x[1]), 8);
     cmd.n = n;
@@ -319,6 +333,19 @@ void SetRenderTargets(CPU& c) {
 }
 
 void ClearColor(CPU& c) {
+    if (trace_record()) {
+        const float* f = c.x[2] ? reinterpret_cast<const float*>(c.x[2]) : nullptr;
+        log("rec %llx ClearColor %u (%g %g %g %g) mask %#x (lr %s)", (unsigned long long)c.x[0], uint32_t(c.x[1]),
+            f ? f[0] : 0.0, f ? f[1] : 0.0, f ? f[2] : 0.0, f ? f[3] : 0.0, uint32_t(c.x[3]), describe(c.x[30]).c_str());
+    }
+    {   // NX_SKIP_CLEAR_AT=<main offset>: drop the clears called from there (bisecting)
+        static const char* e = std::getenv("NX_SKIP_CLEAR_AT");
+        static const uint64_t at = e ? std::strtoull(e, nullptr, 16) : 0;
+        if (at) {
+            const LoadedModule* m = module_at(c.x[30]);
+            if (m && c.x[30] - m->base == at) return;
+        }
+    }
     Cmd cmd{Cmd::ClearColor};
     cmd.n = uint32_t(c.x[1]);
     if (c.x[2]) std::memcpy(cmd.f, reinterpret_cast<const void*>(c.x[2]), 16);
@@ -344,6 +371,9 @@ void SetViewport(CPU& c) {
 }
 
 void SetScissor(CPU& c) {
+    if (trace_record())
+        log("rec %llx SetScissor %d %d %d %d", (unsigned long long)c.x[0], int32_t(c.x[1]), int32_t(c.x[2]),
+            int32_t(c.x[3]), int32_t(c.x[4]));
     Cmd cmd{Cmd::SetScissor};
     for (int k = 0; k < 4; k++) cmd.i[k] = int32_t(c.x[1 + k]);
     record(c.x[0], cmd);

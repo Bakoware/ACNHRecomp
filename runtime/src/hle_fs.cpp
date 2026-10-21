@@ -169,6 +169,49 @@ void Unmount(CPU& c) {
 }
 
 void Commit(CPU& c) { c.x[0] = kOk; }
+
+// ---- device save data (ACNH: the island is one save for the whole console, not per user) ----
+// user/device_save. Its size: what the game asked for last (ExtendDeviceSaveData), kept in user/device_save.size; until
+// then a size larger than any game asks for, so the game never needs to extend it. Commits write nothing extra:
+// files are written in place (a crash in the middle of a save can leave it half written, unlike the console's
+// journal; back up user/device_save to be safe).
+fs::path device_save_dir() { return data_root() / "user" / "device_save"; }
+
+void MountDeviceSaveData(CPU& c) {  // Result (const char* name)
+    std::lock_guard lk(g_fs);
+    mount(cstr(c.x[0]), device_save_dir());
+    c.x[0] = kOk;
+}
+
+void GetDeviceSaveDataSize(CPU& c) {  // Result (int64_t* size, int64_t* journal size)
+    int64_t size = 0x40000000, journal = 0x40000000;
+    if (FILE* f = plat::fopen_utf8(utf8(data_root() / "user" / "device_save.size"), "rb")) {
+        long long a = 0, b = 0;
+        if (std::fscanf(f, "%lld %lld", &a, &b) == 2) size = a, journal = b;
+        std::fclose(f);
+    }
+    if (c.x[0]) st<int64_t>(c.x[0], size);
+    if (c.x[1]) st<int64_t>(c.x[1], journal);
+    c.x[0] = kOk;
+}
+
+void ExtendDeviceSaveData(CPU& c) {  // Result (int64_t size, int64_t journal size)
+    std::error_code ec;
+    fs::create_directories(data_root() / "user", ec);
+    if (FILE* f = plat::fopen_utf8(utf8(data_root() / "user" / "device_save.size"), "wb")) {
+        std::fprintf(f, "%lld %lld\n", (long long)int64_t(c.x[0]), (long long)int64_t(c.x[1]));
+        std::fclose(f);
+    }
+    log("fs: ExtendDeviceSaveData(%#llx, %#llx)", (unsigned long long)c.x[0], (unsigned long long)c.x[1]);
+    c.x[0] = kOk;
+}
+
+void GetSaveDataRestoreFlag(CPU& c) {  // Result (bool*, const char* mount): never restored
+    if (c.x[0]) st<uint8_t>(c.x[0], 0);
+    c.x[0] = kOk;
+}
+
+void SetPriorityOnCurrentThread(CPU&) {}
 void EnableGlobalFileDataCache(CPU& c) { c.x[0] = kOk; }
 void DisableGlobalFileDataCache(CPU& c) { c.x[0] = kOk; }
 
@@ -468,6 +511,34 @@ void SetFileSize(CPU& c) {  // (FileHandle, s64 size)
     c.x[0] = ok ? kOk : kPathNotFound;
 }
 
+void CleanDirectoryRecursively(CPU& c) {  // the directory's contents go, the directory stays
+    std::lock_guard lk(g_fs);
+    fs::path p = resolve(cstr(c.x[0]));
+    std::error_code ec;
+    if (p.empty() || !fs::is_directory(p, ec)) {
+        c.x[0] = kPathNotFound;
+        return;
+    }
+    for (auto& e : fs::directory_iterator(p, ec)) fs::remove_all(e.path(), ec);
+    c.x[0] = ec ? kPathNotFound : kOk;
+}
+
+void RenameDirectory(CPU& c) {  // (const char* from, const char* to)
+    std::lock_guard lk(g_fs);
+    fs::path a = resolve(cstr(c.x[0])), b = resolve(cstr(c.x[1]));
+    std::error_code ec;
+    if (a.empty() || b.empty() || !fs::is_directory(a, ec)) {
+        c.x[0] = kPathNotFound;
+        return;
+    }
+    if (fs::exists(b, ec)) {
+        c.x[0] = kPathAlreadyExists;
+        return;
+    }
+    fs::rename(a, b, ec);
+    c.x[0] = ec ? kPathNotFound : kOk;
+}
+
 void DeleteDirectoryRecursively(CPU& c) {
     std::lock_guard lk(g_fs);
     fs::path p = resolve(cstr(c.x[0]));
@@ -483,6 +554,15 @@ void DeleteDirectoryRecursively(CPU& c) {
 }  // namespace
 
 NX_HLE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", QueryMountRomCacheSize);
+NX_HLE("_ZN2nn2fs19MountDeviceSaveDataEPKc", MountDeviceSaveData);
+NX_HLE("_ZN2nn2fs21GetDeviceSaveDataSizeEPlS1_", GetDeviceSaveDataSize);
+NX_HLE("_ZN2nn2fs20ExtendDeviceSaveDataEll", ExtendDeviceSaveData);
+NX_HLE("_ZN2nn2fs22GetSaveDataRestoreFlagEPbPKc", GetSaveDataRestoreFlag);
+NX_HLE("_ZN2nn2fs6CommitEPKPKci", Commit);
+NX_HLE("_ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE", Commit);
+NX_HLE("_ZN2nn2fs25CleanDirectoryRecursivelyEPKc", CleanDirectoryRecursively);
+NX_HLE("_ZN2nn2fs15RenameDirectoryEPKcS2_", RenameDirectory);
+NX_HLE("_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE", SetPriorityOnCurrentThread);
 NX_HLE("_ZN2nn2fs8MountRomEPKcPvm", MountRom);
 NX_HLE("_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", EnsureSaveData);
 NX_HLE("_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", MountSaveData);

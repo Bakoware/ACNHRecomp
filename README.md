@@ -28,7 +28,10 @@ Resumo:
 | Recompilação da CPU (`main`, `sdk`, `subsdk0`) | ✅ 16,4 M + 1,7 M + 0,9 M instruções, 0 não tratadas |
 | Shaders Maxwell → SPIR-V | ✅ 6.200 blocos, 0 inválidos |
 | Build nativo Linux | ✅ |
-| Boot / gráficos / áudio / input / saves | ver [docs/STATUS.md](docs/STATUS.md) |
+| Boot, serviços do sistema, áudio, relógio, controle | ✅ |
+| UI: carregamento, diálogos, criação de personagem com teclado | ✅ |
+| Cena 3D | 🔧 em andamento |
+| Gameplay na ilha | ⏳ ver [docs/STATUS.md](docs/STATUS.md) |
 
 ## Como funciona
 

@@ -1,5 +1,6 @@
 // Animal Crossing: New Horizons (01006F8002326000, 3.0.2): what the shared runtime needs to know about the game.
 // The game draws through NVN (docs/upstream/NVN.md); what we know about it is in docs/ACNH.md.
+#include <cstdlib>
 #include <cstring>
 
 #include <nx/game.h>
@@ -46,7 +47,22 @@ void widen_sys_budget() {
 
 }  // namespace
 
-void game::after_init() { widen_sys_budget(); }
+// The engine's "clear on bind" (main+37fb390) clears a render target every time the UI switches back to it, so each
+// capture-texture element wiped what was drawn before it and the composite then read a cleared HDR target: a black
+// screen. On the console those clears are gated by per-buffer state the GPU keeps; until that is modelled, the clears
+// called from there (main+37fb4fc) are dropped, which is what the console's output shows. NX_SKIP_CLEAR_AT=0 restores them.
+void skip_bind_clears() {
+#if defined(_WIN32)
+    if (!std::getenv("NX_SKIP_CLEAR_AT")) _putenv_s("NX_SKIP_CLEAR_AT", "37fb4fc");
+#else
+    setenv("NX_SKIP_CLEAR_AT", "37fb4fc", 0);
+#endif
+}
+
+void game::after_init() {
+    widen_sys_budget();
+    skip_bind_clears();
+}
 void game::renderer_start() {}
 void game::first_frame() {}
 

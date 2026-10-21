@@ -12,6 +12,7 @@
 #include <array>
 #include <cstring>
 #include <cstdio>
+#include <functional>
 #include <cstdlib>
 #include <string>
 #include <atomic>
@@ -160,6 +161,66 @@ void QueueInitialize(CPU& c) { c.x[0] = 1; }  // NVNboolean (NVNqueue*, const NV
 void QueueFinalize(CPU&) {}
 void QueueSubmitCommands(CPU& c) {  // (NVNqueue*, int count, const NVNcommandHandle*)
     plat::perf_hint_thread();  // this thread replays: part of every frame (perf_hint.cpp)
+    {   // NX_TRACE_SUBMITS=<presented frame>: the next 60 submits, with their queue, thread and handles
+        static const char* e = std::getenv("NX_TRACE_SUBMITS");
+        static const uint64_t from = e ? std::strtoull(e, nullptr, 10) : 0;
+        static std::atomic<int> n{0};
+        if (e && g_frame >= from && n++ < 60) {
+            std::string hs;
+            for (uint32_t k = 0; k < uint32_t(c.x[1]) && k < 8; k++) {
+                char b[24];
+                std::snprintf(b, sizeof b, " %llx", (unsigned long long)ld<uint64_t>(c.x[2] + 8 * k));
+                hs += b;
+            }
+            log("submit: queue %llx, %u lists:%s (lr %s)", (unsigned long long)c.x[0], uint32_t(c.x[1]), hs.c_str(),
+                describe(c.x[30]).c_str());
+            // The list's outline: targets, clears and draws, with each called list summarised in place.
+            std::function<void(const CmdList&, int)> outline = [&](const CmdList& l, int depth) {
+                std::string line;
+                uint32_t draws = 0;
+                auto flush = [&] {
+                    if (draws) line += " draws:" + std::to_string(draws), draws = 0;
+                };
+                for (const Cmd& k : l.cmds) {
+                    char b[64];
+                    switch (k.op) {
+                        case Cmd::SetRenderTargets:
+                            flush();
+                            std::snprintf(b, sizeof b, " RT:%llx", (unsigned long long)(k.n ? k.a[0] : 0));
+                            line += b;
+                            break;
+                        case Cmd::ClearColor: flush(), line += " clear"; break;
+                        case Cmd::SetScissor:
+                            flush();
+                            std::snprintf(b, sizeof b, " sc(%d,%d,%d,%d)", k.i[0], k.i[1], k.i[2], k.i[3]);
+                            line += b;
+                            break;
+                        case Cmd::DrawArrays:
+                        case Cmd::DrawElements: draws++; break;
+                        case Cmd::CallList:
+                            flush();
+                            if (depth < 2)
+                                if (auto sub = command_list(k.a[0])) {
+                                    log("submit: %*s%s", depth * 2, "", line.c_str());
+                                    line.clear();
+                                    log("submit: %*s[call %llx: %zu cmds]", depth * 2 + 2, "", (unsigned long long)k.a[0],
+                                        sub->cmds.size());
+                                    outline(*sub, depth + 1);
+                                    break;
+                                }
+                            std::snprintf(b, sizeof b, " call:%llx(gone)", (unsigned long long)k.a[0]);
+                            line += b;
+                            break;
+                        default: break;
+                    }
+                }
+                flush();
+                if (!line.empty()) log("submit: %*s%s", depth * 2, "", line.c_str());
+            };
+            for (uint32_t k = 0; k < uint32_t(c.x[1]) && k < 2; k++)
+                if (auto l = command_list(ld<uint64_t>(c.x[2] + 8 * k))) outline(*l, 0);
+        }
+    }
     std::vector<std::shared_ptr<CmdList>> lists;
     static uint64_t submitted = 0, missing = 0;
     for (uint32_t k = 0; k < uint32_t(c.x[1]); k++) {

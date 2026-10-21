@@ -1,5 +1,6 @@
 // Diagnostics for ACNH bring-up (NX_ALLOC_TRACE=1): the sizes the game's StandardAllocators are set up with, and
 // every allocation that fails, with the guest backtrace. Off by default: the wrappers then pass straight through.
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
@@ -150,4 +151,21 @@ void acnh_create_probe(nx::CPU& c) {
     const char* pname = parent ? reinterpret_cast<const char*>(ld<uint64_t>(parent + 0x28)) : "(current)";
     log("heap create '%s' size %#llx in '%s' (caller %s)", reinterpret_cast<const char*>(ld<uint64_t>(c.x[1] + 8)),
         (unsigned long long)c.x[0], pname, describe(c.x[30]).c_str());
+}
+
+// Instrumented entry of the engine's "clear on bind" (main+37fb390; this, ?, index, frame context): the per-buffer
+// "cleared this frame" word it sets atomically (bit 1), to see why clears repeat (NX_CLEAR_TRACE=<count>).
+void acnh_clear_probe(nx::CPU& c) {
+    using namespace nx;
+    static const char* e = std::getenv("NX_CLEAR_TRACE");
+    static std::atomic<int> left{e ? std::atoi(e) : 0};
+    if (left <= 0 || g_frame < 600 || left-- <= 0) return;
+    uint64_t self = c.x[0], ctx = c.x[3];
+    int32_t idx = int32_t(ld<uint32_t>(ctx + 0x58)) - int32_t(ld<uint16_t>(self + 0x3da));
+    uint32_t count = ld<uint32_t>(self + 0x368);
+    int32_t use = uint32_t(idx) < count ? idx : 0;
+    uint64_t entry = ld<uint64_t>(self + 0x370) + 32ull * uint64_t(int64_t(use));
+    log("clearprobe: this %llx flags %#x ctx+58 %u base %u count %u -> entry %d word %#x (frame %llu)",
+        (unsigned long long)self, ld<uint32_t>(self + 0x5c8), ld<uint32_t>(ctx + 0x58), ld<uint16_t>(self + 0x3da), count,
+        use, ld<uint32_t>(entry + 4), (unsigned long long)g_frame.load());
 }

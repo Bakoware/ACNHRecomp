@@ -188,8 +188,21 @@ bool init() {
         void* pNext = nullptr;
         VkBool32 fields[15] = {};
     } fport;
-    features.pNext = &f13;
+    // 1.1 and 1.2 too: the translated shaders declare DrawParameters (gl_BaseInstance/DrawIndex; ~3,100 of ACNH's
+    // blocks), and without shaderDrawParameters enabled the Intel driver drew nothing into ACNH's main target.
+    // Fragment shader interlock: the translator emits it where the host has it (StaticGpuAccessor).
+    VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+    VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT finterlock{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT};
+    features.pNext = &f11;
+    f11.pNext = &f12;
+    f12.pNext = &f13;
     void** tail = &f13.pNext;
+    if (has_extension(dext, "VK_EXT_fragment_shader_interlock")) {
+        dexts.push_back("VK_EXT_fragment_shader_interlock");
+        *tail = &finterlock, tail = &finterlock.pNext;
+    }
     if (has_extension(dext, "VK_EXT_index_type_uint8")) {
         dexts.push_back("VK_EXT_index_type_uint8");
         *tail = &fu8, tail = &fu8.pNext;
