@@ -33,7 +33,9 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | BCAT (conteúdo entregue pela Nintendo): vazio, como console nunca conectado | ✅ |
 | **UI na tela**: tela de carregamento, diálogos do Timmy | ✅ |
 | **Criação de personagem** (registro Nook Inc.) com o teclado do próprio jogo | ✅ digitação funciona |
-| Cena 3D atrás dos diálogos (aeroporto) | 🔧 preta: investigando |
+| Renderização 3D (cena do oceano ao entardecer, terreno em alvos menores) | ✅ conferida por dump |
+| Fundo atrás dos diálogos do Timmy | 🔧 preto: painéis Ui2d (BC4) cobrem a cena; investigando se é transição legítima |
+| Confirmar o nome com `+` no teclado do jogo | 🔧 não confirmou no teste automático |
 | Ilha / gameplay | ⏳ |
 
 ## Problemas encontrados e resolvidos
@@ -66,6 +68,19 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 19. Tela preta: o "clear on bind" do motor (`main+37fb390`) limpava o alvo HDR a cada troca de alvo da UI, e a
     composição final lia o alvo limpo. No console esses clears são controlados por estado que a GPU mantém; por
     enquanto os clears chamados de `main+37fb4fc` são ignorados (`games/acnh/game.cpp`, `NX_SKIP_CLEAR_AT=0` desliga).
+
+## Próximos passos (pedidos)
+
+- **DLC**: os dois DLCs do dump são os pacotes gratuitos (índices 300 Pocket Camp e 301 Nook Inc. Silk Rug, só
+  `PublicData`). Falta importar a RomFS deles e implementar `aoc:u` (Count/ListAddOnContent) e
+  `nn::fs::MountAddOnContent`.
+- **60 fps**: o jogo amarra a lógica a 30 quadros por segundo; precisa de um patch que mude o intervalo de
+  apresentação **e** o passo de tempo da simulação, senão o jogo roda 2x mais rápido.
+- **Janela adaptável / resolução nativa**: hoje o quadro 1920x1080 é escalado para a janela. Renderizar no tamanho
+  da janela exige redimensionar os alvos de render do motor (o framework já faz isso para o Wonder em
+  `nvn_ultrawide.cpp`).
+- **Hardware fraco**: perfil `intel` (720p, submits em pipeline) já existe; próximos ganhos: cache de registradores
+  no recompilador (hoje todo acesso a registrador é acesso à memória) e PGO/LTO no código gerado.
 
 ## Ferramentas de diagnóstico
 
