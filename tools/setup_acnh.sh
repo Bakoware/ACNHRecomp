@@ -3,6 +3,7 @@
 # output is already there, so the script can be run again after a failure or an update of the repository.
 #
 #   usage: tools/setup_acnh.sh --keys <prod.keys> [--title-keys <title.keys>] --base <base.nsp> --update <update.nsp>
+#                              [--dlc <add-on.nsp>]...   (add-on content: imported to private/acnh/aoc/<index>/)
 #          tools/setup_acnh.sh                       (later runs: the import is done, the rest is checked)
 #   env:   JOBS=<compile jobs> (default: RAM in GB / 3, at most the core count)   FORCE=<stage> to redo one stage
 #
@@ -16,13 +17,14 @@ T=$P/third_party
 G=$P/acnh
 mkdir -p "$P" "$T" "$G/logs"
 
-KEYS="" TKEYS="" BASE="" UPD=""
+KEYS="" TKEYS="" BASE="" UPD="" DLC=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --keys) KEYS=$2; shift 2 ;;
     --title-keys) TKEYS=$2; shift 2 ;;
     --base) BASE=$2; shift 2 ;;
     --update) UPD=$2; shift 2 ;;
+    --dlc) DLC+=("$2"); shift 2 ;;
     *) echo "unknown argument $1"; exit 1 ;;
   esac
 done
@@ -71,14 +73,16 @@ if [ ! -f "$HARNESS" ] || force harness; then
   dotnet build tools/maxwell/spirv_harness/SpirvHarness.csproj -c Release -m:4 > "$G/logs/harness.log" 2>&1 ||
     { tail -20 "$G/logs/harness.log"; exit 1; }
 fi
-if [ ! -x "$P/build/importer/nximport" ]; then
+[ -f "$P/build/importer/build.ninja" ] ||
   CXX=clang++ "$CMAKE" -S tools/importer -B "$P/build/importer" -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" >/dev/null
-  "$NINJA" -C "$P/build/importer" nximport >/dev/null
-fi
+"$NINJA" -C "$P/build/importer" nximport >/dev/null
 
 # ---- import ---------------------------------------------------------------------------------------------------
-say "import (ExeFS + RomFS with the update applied)"
-if [ ! -f "$G/analysis/main.bin" ] || [ ! -d "$G/extract/romfs/Shader" ] || force import; then
+say "import (ExeFS + RomFS with the update applied, add-on content)"
+# With --dlc the import always runs: files already imported are checked by size and skipped (seconds).
+NEED_AOC=""
+[ ${#DLC[@]} -gt 0 ] && NEED_AOC=1
+if [ ! -f "$G/analysis/main.bin" ] || [ ! -d "$G/extract/romfs/Shader" ] || [ -n "$NEED_AOC" ] || force import; then
   [ -n "$KEYS" ] && [ -n "$BASE" ] && [ -n "$UPD" ] || { echo "first run: pass --keys, --base and --update"; exit 1; }
   # Some key dumps carry entries with odd lengths that the importer does not need: keep only well-formed ones.
   mkdir -p "$P/keys"
@@ -92,7 +96,7 @@ for l in open(sys.argv[1], errors="replace"):
 open(sys.argv[2], "w").writelines(out)' "$KEYS" "$P/keys/prod.keys"
   ARGS=("$P/keys/prod.keys")
   [ -n "$TKEYS" ] && ARGS+=("$TKEYS")
-  "$P/build/importer/nximport" --exefs --title 01006F8002326000 --out "$G" "${ARGS[@]}" "$BASE" "$UPD" \
+  "$P/build/importer/nximport" --exefs --title 01006F8002326000 --out "$G" "${ARGS[@]}" "$BASE" "$UPD" ${DLC[@]+"${DLC[@]}"} \
     > "$G/logs/import.log" 2>&1 || { tail -5 "$G/logs/import.log"; exit 1; }
   tail -2 "$G/logs/import.log"
   cp "$G/analysis/main.npdm" "$G/exefs/" 2>/dev/null || true

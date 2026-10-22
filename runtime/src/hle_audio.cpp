@@ -34,6 +34,14 @@ struct Out {
     bool started = false;
 };
 Out g_out;
+float g_out_volume = 1.0f;
+
+// While an AudioRenderer is running it owns the device; AudioOut buffers (ACNH: the opening movie's sound) are then
+// added into the renderer's final mix instead of queued after it. Bounded to 200 ms so a stalled renderer cannot
+// make it grow.
+std::mutex g_out_mix_lock;
+std::deque<int16_t> g_out_mix;
+bool renderer_running();
 
 void release(void* ctx) {
     std::lock_guard lk(g_out.lock);
@@ -78,7 +86,14 @@ void player() {
             g_out.queued.pop_front();
             size = ld<uint64_t>(buf + 16);
         }
-        if (device && plat::audio_submit(reinterpret_cast<const void*>(ld<uint64_t>(buf)), size,
+        bool mix = renderer_running();
+        if (mix) {
+            const int16_t* pcm = reinterpret_cast<const int16_t*>(ld<uint64_t>(buf));
+            std::lock_guard lk(g_out_mix_lock);
+            for (uint64_t k = 0; k < size / 2; k++) g_out_mix.push_back(int16_t(float(pcm[k]) * g_out_volume));
+            while (g_out_mix.size() > 48000 * 2 / 5) g_out_mix.pop_front();
+        }
+        if (!mix && device && plat::audio_submit(reinterpret_cast<const void*>(ld<uint64_t>(buf)), size,
                                          reinterpret_cast<void*>(buf)))
             continue;
         next = std::max(next, clock::now() - std::chrono::milliseconds(50));
@@ -96,6 +111,7 @@ void InitializeAudioOutParameter(CPU& c) {  // {u32 sample_rate; u16 channels; u
 
 void OpenDefaultAudioOut(CPU& c) {  // (AudioOut*, os::SystemEvent*, const AudioOutParameter&)
     uint64_t out = c.x[0], sysev = c.x[1];
+    if (sysev) {
     // Give the guest a system event backed by our kernel event: nn::os::AttachSystemEvent(type, read, managed,
     // write, managed, clear mode = manual).
     auto w = std::make_shared<KEvent>();
@@ -113,6 +129,13 @@ void OpenDefaultAudioOut(CPU& c) {  // (AudioOut*, os::SystemEvent*, const Audio
     c.x[5] = 1;  // manual clear
     call(c, attach);
     for (int k = 0; k < 8; k++) c.x[k] = saved[k];
+    }
+    log("audio: AudioOut opened (%u Hz, %u channels asked; 48 kHz stereo s16 given)", ld<uint32_t>(c.x[2]),
+        ld<uint16_t>(c.x[2] + 4));
+    {
+        std::lock_guard lk(g_out.lock);
+        g_out.queued.clear(), g_out.released.clear();
+    }
     st<uint64_t>(out, 0xA0D10);  // opaque
     static std::once_flag once;
     std::call_once(once, [] { std::thread(player).detach(); });
@@ -131,7 +154,23 @@ void StopAudioOut(CPU&) {
     g_out.started = false;
 }
 
-void CloseAudioOut(CPU&) {}
+void CloseAudioOut(CPU&) {
+    std::lock_guard lk(g_out.lock);
+    g_out.started = false;
+    g_out.queued.clear(), g_out.released.clear();
+}
+
+// (AudioOut*, const AudioOutParameter&): the same without a system event (the game polls for released buffers).
+void OpenDefaultAudioOutNoEvent(CPU& c) {
+    c.x[2] = c.x[1];
+    c.x[1] = 0;
+    OpenDefaultAudioOut(c);
+}
+void GetAudioOutSampleRate(CPU& c) { c.x[0] = 48000; }
+void GetAudioOutChannelCount(CPU& c) { c.x[0] = 2; }
+void GetAudioOutSampleFormat(CPU& c) { c.x[0] = 2; }  // SampleFormat_PcmInt16
+void SetAudioOutVolume(CPU& c) { g_out_volume = std::clamp(c.v[0].f32[0], 0.0f, 2.0f); }
+void GetAudioOutBufferDataSize(CPU& c) { c.x[0] = ld<uint64_t>(c.x[0] + 16); }
 
 void SetAudioOutBufferInfo(CPU& c) {  // (AudioOutBuffer*, void* data, size_t capacity, size_t size)
     st<uint64_t>(c.x[0], c.x[1]);
@@ -197,6 +236,11 @@ std::shared_ptr<EventState> g_audio_frame = std::make_shared<EventState>();
 
 std::mutex g_renderers_lock;
 std::vector<uint64_t> g_renderers;  // AudioRendererImpl*
+
+bool renderer_running() {
+    std::lock_guard lk(g_renderers_lock);
+    return !g_renderers.empty();
+}
 
 uint64_t sdk_base() {
     static uint64_t base = [] {
@@ -408,6 +452,13 @@ void render_submit() {
     o.mixed = false;
     int16_t pcm[kFrame * 2];
     bool any = false;
+    {
+        std::lock_guard mk(g_out_mix_lock);
+        for (int s = 0; s < kFrame * 2 && !g_out_mix.empty(); s++) {
+            o.mix[s] += g_out_mix.front();
+            g_out_mix.pop_front();
+        }
+    }
     for (int s = 0; s < kFrame * 2; s++) {
         int v = std::clamp(o.mix[s], -32768, 32767);
         pcm[s] = int16_t(v);
@@ -591,6 +642,12 @@ NX_HLE("_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", zer
 NX_HLE("_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv", two);
 NX_HLE("_ZN2nn5audio27InitializeAudioOutParameterEPNS0_17AudioOutParameterE", InitializeAudioOutParameter);
 NX_HLE("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE", OpenDefaultAudioOut);
+NX_HLE("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE", OpenDefaultAudioOutNoEvent);
+NX_HLE("_ZN2nn5audio21GetAudioOutSampleRateEPKNS0_8AudioOutE", GetAudioOutSampleRate);
+NX_HLE("_ZN2nn5audio23GetAudioOutChannelCountEPKNS0_8AudioOutE", GetAudioOutChannelCount);
+NX_HLE("_ZN2nn5audio23GetAudioOutSampleFormatEPKNS0_8AudioOutE", GetAudioOutSampleFormat);
+NX_HLE("_ZN2nn5audio17SetAudioOutVolumeEPNS0_8AudioOutEf", SetAudioOutVolume);
+NX_HLE("_ZN2nn5audio25GetAudioOutBufferDataSizeEPKNS0_14AudioOutBufferE", GetAudioOutBufferDataSize);
 NX_HLE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", StartAudioOut);
 NX_HLE("_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE", StopAudioOut);
 NX_HLE("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", CloseAudioOut);

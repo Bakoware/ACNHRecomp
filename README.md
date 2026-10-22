@@ -95,18 +95,26 @@ Ubuntu/Debian, uma vez:
 
 ```sh
 sudo apt install build-essential clang lld cmake ninja-build patch curl python3-venv spirv-tools pkg-config \
-     libvulkan-dev libsdl3-dev mesa-vulkan-drivers vulkan-tools
+     libvulkan-dev libsdl3-dev libvpx-dev mesa-vulkan-drivers vulkan-tools
 ```
+
+macOS: `brew install llvm cmake ninja sdl3 molten-vk vulkan-loader libvpx`. A `libvpx` decodifica o filme de
+abertura (VP9); sem ela o jogo roda e o filme aparece preto.
 
 ## Instalação
 
-Você precisa de: `prod.keys` (e `title.keys` se tiver), o NSP do **jogo base** e o NSP do **update 3.0.2**.
+Você precisa de: `prod.keys` (e `title.keys` se tiver), o NSP do **jogo base** e o NSP do **update 3.0.2**; os NSPs
+de **DLC** são opcionais (um `--dlc` para cada).
 
 ```sh
 git clone <este repositório> ACNHRecomp && cd ACNHRecomp
 tools/setup_acnh.sh --keys ~/switch/prod.keys --title-keys ~/switch/title.keys \
-                    --base ~/switch/base.nsp --update ~/switch/update.nsp
+                    --base ~/switch/base.nsp --update ~/switch/update.nsp \
+                    --dlc ~/switch/dlc1.nsp --dlc ~/switch/dlc2.nsp
 ```
+
+Os DLCs vão para `private/acnh/aoc/<índice>/` e o jogo os vê como conteúdo adicional comprado. Para adicionar um DLC
+depois, rode o mesmo comando com os `--dlc` (a importação do jogo já feita é aproveitada).
 
 O script roda em etapas e pula o que já está pronto. Se algo falhar, corrija e rode de novo (sem argumentos,
 depois da importação):

@@ -35,7 +35,9 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | **Criação de personagem** (registro Nook Inc.) com o teclado do próprio jogo | ✅ digitação funciona |
 | Renderização 3D (cena do oceano ao entardecer, terreno em alvos menores) | ✅ conferida por dump |
 | Fundo atrás dos diálogos do Timmy | 🔧 preto: painéis Ui2d (BC4) cobrem a cena; investigando se é transição legítima |
-| Confirmar o nome com `+` no teclado do jogo | 🔧 não confirmou no teste automático |
+| Registro completo: nome (`+` confirma), aniversário | ✅ (o jogo recusa nomes com mais de 5 algarismos, como no console) |
+| DLC (`aoc:u` + `MountAddOnContent`): os dois pacotes do dump montados | ✅ |
+| Filme de abertura (`OpeningMovie.webm`, VP9 + Vorbis): decodificador VP9 por software (libvpx) | ✅ decodificando |
 | Ilha / gameplay | ⏳ |
 
 ## Problemas encontrados e resolvidos
@@ -69,11 +71,18 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
     composição final lia o alvo limpo. No console esses clears são controlados por estado que a GPU mantém; por
     enquanto os clears chamados de `main+37fb4fc` são ignorados (`games/acnh/game.cpp`, `NX_SKIP_CLEAR_AT=0` desliga).
 
+20. **DLC**: o importer extrai a RomFS dos NCAs `PublicData` de cada add-on para `private/acnh/aoc/<índice>/`
+    (`setup_acnh.sh --dlc <nsp>`); `nn::aoc::Count/ListAddOnContent` e `nn::fs::MountAddOnContent` respondem com o que
+    está lá. Os dois DLCs do dump (300 Pocket Camp, 301 Nook Inc. Silk Rug) são vistos e montados pelo jogo.
+21. `AudioOut` sem evento, formato/taxa/canais/volume (HLE): o filme de abertura toca o som por ele. Enquanto o
+    AudioRenderer roda, o som do AudioOut é somado à mixagem final dele em vez de entrar na fila do dispositivo.
+22. **Filme de abertura**: o `movie::Decoder` do SDK é o stagefright do Android sobre o NVDEC do console (aborta ao
+    abrir o driver). O construtor é substituído para vídeo (VP8/VP9): o objeto recebe uma vtable nossa com o mesmo
+    contrato (índices de buffers de entrada/saída, quatro eventos), decodificada com libvpx em NV12
+    (`runtime/src/hle_movie.cpp`). O áudio (Vorbis) continua no decodificador do SDK, que é software.
+
 ## Próximos passos (pedidos)
 
-- **DLC**: os dois DLCs do dump são os pacotes gratuitos (índices 300 Pocket Camp e 301 Nook Inc. Silk Rug, só
-  `PublicData`). Falta importar a RomFS deles e implementar `aoc:u` (Count/ListAddOnContent) e
-  `nn::fs::MountAddOnContent`.
 - **60 fps**: o jogo amarra a lógica a 30 quadros por segundo; precisa de um patch que mude o intervalo de
   apresentação **e** o passo de tempo da simulação, senão o jogo roda 2x mais rápido.
 - **Janela adaptável / resolução nativa**: hoje o quadro 1920x1080 é escalado para a janela. Renderizar no tamanho

@@ -1181,7 +1181,7 @@ int import_main(Run& run, const std::vector<InputFile>& inputs, std::string& err
         run.pr.done++;
         run.report();
     }
-    std::vector<std::unique_ptr<Nca>> ncas;
+    std::vector<std::unique_ptr<Nca>> ncas, aoc_ncas;
     for (auto& e : entries) {
         std::string n = lower(e.name);
         if (!ends_with(n, ".nca") && !ends_with(n, ".ncz")) continue;
@@ -1197,6 +1197,9 @@ int import_main(Run& run, const std::vector<InputFile>& inputs, std::string& err
                             nca->sec[i].crypt(), nca->sec[i].is_sparse() ? ", sparse" : "", nca->sec[i].is_patch() ? ", patch" : "",
                             double(nca->sec[i].size) / 1048576.0);
             ncas.push_back(std::move(nca));
+        } else if (nca && (nca->content_type == 4 || nca->content_type == 5)) {  // Data / PublicData: add-on content
+            nca->src = e.cont;
+            aoc_ncas.push_back(std::move(nca));
         }
     }
     secure_zero(hk, sizeof hk);
@@ -1370,7 +1373,8 @@ int import_main(Run& run, const std::vector<InputFile>& inputs, std::string& err
         romfs_fs = base->sec[base_romfs].fs;
         romfs_name = base->name;
     }
-    auto rom = open_ivfc(romfs_sec, romfs_fs, romfs_name);
+    // writes one RomFS image under <root>/<prefix>; returns the file count and adds the bytes to *bytes
+    auto write_romfs = [&](VerifiedLevel* rom, const std::string& prefix, const char* phase, uint64_t* bytes) -> size_t {
     uint8_t rh[0x50];
     rom->read(0, rh, sizeof rh);
     if (rd64(rh) != 0x50) fail("RomFS header not recognised (wrong base/update pair?)");
@@ -1388,18 +1392,18 @@ int import_main(Run& run, const std::vector<InputFile>& inputs, std::string& err
     for (auto& f : list) {
         if (data_off + f.off + f.size > rom->size) fail("RomFS file %s lies outside the image", f.path.c_str());
         total += f.size;
-        if (!done_ok("extract/romfs/" + f.path, f.size)) remaining += f.size;
+        if (!done_ok(prefix + f.path, f.size)) remaining += f.size;
     }
-    run.log("romfs: %zu files, %zu folders, %.2f GB (%.2f GB still to write)", list.size(), dir_list.size(), double(total) / 1e9,
-            double(remaining) / 1e9);
+    run.log("%s: %zu files, %zu folders, %.2f GB (%.2f GB still to write)", prefix.c_str(), list.size(), dir_list.size(),
+            double(total) / 1e9, double(remaining) / 1e9);
     check_space(root, remaining);
-    mkdirs(root + "/extract/romfs");
-    for (auto& dname : dir_list) mkdirs(root + "/extract/romfs/" + dname);
-    run.pr = {"romfs", 0, total, ""};
+    mkdirs(root + "/" + prefix);
+    for (auto& dname : dir_list) mkdirs(root + "/" + prefix + dname);
+    run.pr = {phase, 0, total, ""};
     run.report(true);
     std::vector<uint8_t> buf(kChunk);
     for (auto& f : list) {
-        std::string rel = "extract/romfs/" + f.path;
+        std::string rel = prefix + f.path;
         run.pr.item = f.path;
         if (done_ok(rel, f.size)) {
             run.pr.done += f.size;
@@ -1418,6 +1422,33 @@ int import_main(Run& run, const std::vector<InputFile>& inputs, std::string& err
         w.commit();
         journal.add("romfs", rel, f.size, w.crc);
     }
+    *bytes += total;
+    return list.size();
+    };
+    uint64_t total = 0;
+    size_t nfiles;
+    {
+        auto rom = open_ivfc(romfs_sec, romfs_fs, romfs_name);
+        nfiles = write_romfs(rom.get(), "extract/romfs/", "romfs", &total);
+    }
+
+    // ---- add-on content: <root>/aoc/<index>/ (the add-on's title is the application's + 0x1000 + index) ----
+    for (auto& n : aoc_ncas) {
+        if ((n->title_id & ~0xFFFull) != app + 0x1000) continue;
+        unsigned index = unsigned(n->title_id & 0xFFF);
+        if (!n->key_ok) {
+            run.log("add-on %u (%s): no key (%s), skipped", index, n->name.c_str(), n->key_problem.c_str());
+            continue;
+        }
+        int sec = -1;
+        for (int i = 0; i < 4; i++)
+            if (n->sec[i].present && n->sec[i].partition() == 0) sec = i;
+        if (sec < 0) continue;
+        auto rom = open_ivfc(plain_section(*n, sec), n->sec[sec].fs, n->name);
+        uint64_t bytes = 0;
+        size_t c = write_romfs(rom.get(), "aoc/" + std::to_string(index) + "/", "aoc", &bytes);
+        run.log("add-on %u: %zu files from %s", index, c, n->src.c_str());
+    }
 
     // ---- index + completion marker ----
     {
@@ -1433,11 +1464,11 @@ int import_main(Run& run, const std::vector<InputFile>& inputs, std::string& err
         if (!idx || rename((root + "/.import/index.tsv.part").c_str(), (root + "/.import/index.tsv").c_str()) != 0)
             fail("cannot write the import index");
         std::ofstream mark(root + "/.import/complete", std::ios::trunc);
-        mark << ident << "\n" << list.size() << " romfs files, " << total << " bytes\n";
+        mark << ident << "\n" << nfiles << " romfs files, " << total << " bytes\n";
     }
     run.pr.phase = "done";
     run.report(true);
-    run.log("import complete: %zu RomFS files, %.2f GB", list.size(), double(total) / 1e9);
+    run.log("import complete: %zu RomFS files, %.2f GB", nfiles, double(total) / 1e9);
     return 0;
 }
 

@@ -2,6 +2,8 @@
 //   rom:   -> private/extract/romfs (the RomFS with the update applied)
 //   save:  -> private/user/save/<mount>
 //   cache: -> private/user/cache<index>
+//   add-on content (MountAddOnContent) -> private/aoc/<index>
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
@@ -489,6 +491,59 @@ void MountCacheStorage(CPU& c) {  // (name, int index)
     c.x[0] = kOk;
 }
 
+// ---- add-on content (DLC): aoc/<index>/, written by the importer from the add-on NSPs ----------------------------
+// nn::aoc answers with the indexes found there, nn::fs::MountAddOnContent mounts one of them. Without the folder the
+// game sees no add-on content, as on a console that never bought any.
+std::vector<int> aoc_indexes() {
+    std::vector<int> out;
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(data_root() / "aoc", ec)) {
+        if (!e.is_directory()) continue;
+        std::string n = utf8(e.path().filename());
+        if (!n.empty() && n.find_first_not_of("0123456789") == std::string::npos) out.push_back(std::stoi(n));
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+void CountAddOnContent(CPU& c) {  // int ()
+    static bool once = [] {
+        auto v = aoc_indexes();
+        std::string list;
+        for (int i : v) list += " " + std::to_string(i);
+        log("aoc: %zu add-on content(s):%s", v.size(), list.c_str());
+        return true;
+    }();
+    (void)once;
+    c.x[0] = uint64_t(aoc_indexes().size());
+}
+
+void ListAddOnContent(CPU& c) {  // int (int* out, int offset, int count)
+    auto v = aoc_indexes();
+    int off = int(c.x[1]), n = int(c.x[2]), k = 0;
+    for (int i = std::max(off, 0); i < int(v.size()) && k < n; i++, k++) st<int32_t>(c.x[0] + 4 * k, v[i]);
+    c.x[0] = uint64_t(k);
+}
+
+void QueryMountAddOnContentCacheSize(CPU& c) {  // Result (size_t*, int index)
+    st<uint64_t>(c.x[0], 0x1000);
+    c.x[0] = kOk;
+}
+
+void MountAddOnContent(CPU& c) {  // Result (const char* name, int index, void* cache, size_t)
+    std::lock_guard lk(g_fs);
+    fs::path p = data_root() / "aoc" / std::to_string(int(c.x[1]));
+    std::error_code ec;
+    if (!fs::is_directory(p, ec)) {
+        log("aoc: MountAddOnContent(%d): not imported", int(c.x[1]));
+        c.x[0] = kTargetNotFound;
+        return;
+    }
+    g_mounts[cstr(c.x[0])] = p;
+    log("fs: mounted %s: -> %s (add-on %d)", cstr(c.x[0]).c_str(), p.string().c_str(), int(c.x[1]));
+    c.x[0] = kOk;
+}
+
 // ---- SDK 16 additions (Super Mario Bros. Wonder) ---------------------------------------------------------------
 // MountRom(name) without a cache buffer, and ReadFile(size_t* out, FileHandle, s64, void*, size_t, const ReadOption&)
 // are the older calls with one argument less / more: the same functions serve them.
@@ -592,6 +647,10 @@ NX_HLE("_ZN2nn2fs18CreateCacheStorageEill", CreateCacheStorage);
 NX_HLE("_ZN2nn2fs18DeleteCacheStorageEi", DeleteCacheStorage);
 NX_HLE("_ZN2nn2fs17MountCacheStorageEPKci", MountCacheStorage);
 NX_HLE("_ZN2nn2fs8MountRomEPKc", MountRom);
+NX_HLE("_ZN2nn3aoc17CountAddOnContentEv", CountAddOnContent);
+NX_HLE("_ZN2nn3aoc16ListAddOnContentEPiii", ListAddOnContent);
+NX_HLE("_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi", QueryMountAddOnContentCacheSize);
+NX_HLE("_ZN2nn2fs17MountAddOnContentEPKciPvm", MountAddOnContent);
 NX_HLE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE", ReadFileOut);
 NX_HLE("_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", IsSaveDataExisting);
 NX_HLE("_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", SetFileSize);

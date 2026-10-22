@@ -117,6 +117,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/hle_nfp.cpp
     runtime/src/hle_time.cpp
     runtime/src/hle_bcat.cpp
+    runtime/src/hle_movie.cpp
     runtime/src/input_script.cpp
     runtime/src/touch_layout.cpp
     runtime/src/perf_hint.cpp
@@ -238,4 +239,17 @@ endif()
 
 if("subsdk0" IN_LIST NX_MODULES)
     target_compile_definitions(${NX_GAME} PRIVATE NX_HAS_SUBSDK0)
+endif()
+
+# libvpx decodes VP8/VP9 movies (runtime/src/hle_movie.cpp; ACNH's opening movie). From the system: apt install
+# libvpx-dev, brew install libvpx. Without it the movies play with black frames.
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND AND NOT ANDROID)
+    pkg_check_modules(VPX QUIET IMPORTED_TARGET vpx)
+endif()
+if(VPX_FOUND)
+    target_link_libraries(${NX_GAME} PRIVATE PkgConfig::VPX)
+else()
+    message(STATUS "libvpx not found: movies will show black frames")
+    target_compile_definitions(${NX_GAME} PRIVATE NX_NO_VPX)
 endif()
