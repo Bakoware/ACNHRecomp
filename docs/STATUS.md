@@ -111,13 +111,17 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 
 ## Próximos passos (pedidos)
 
-- **60 fps**: o jogo amarra a lógica a 30 quadros por segundo; precisa de um patch que mude o intervalo de
-  apresentação **e** o passo de tempo da simulação, senão o jogo roda 2x mais rápido.
+- **60 fps**: medido: a lógica do ACNH avança **por quadro** (uma fala é digitada em ~115 quadros tanto a 30 quanto
+  a 60 apresentações por segundo, `NX_PRESENT_INTERVAL=1`), então só apresentar a 60 deixa o jogo 2x mais rápido. Um
+  60 fps de verdade exige achar e reduzir à metade o passo de cada sistema que conta quadros (não há uma constante
+  única: o `cFrameRate` do binário é só o fim da string `MusicBeatSyncFrameRate`).
 - **Janela adaptável / resolução nativa**: hoje o quadro 1920x1080 é escalado para a janela. Renderizar no tamanho
   da janela exige redimensionar os alvos de render do motor (o framework já faz isso para o Wonder em
   `nvn_ultrawide.cpp`).
-- **Hardware fraco**: perfil `intel` (720p, submits em pipeline) já existe; próximos ganhos: cache de registradores
-  no recompilador (hoje todo acesso a registrador é acesso à memória) e PGO/LTO no código gerado.
+- **Hardware fraco**: perfil (perf) da cena 3D: o reverb I3DL2 do áudio, renderizado na CPU (no console é o DSP),
+  era a função mais cara do processo (~20% das amostras, um núcleo inteiro). `NX_AUDIO_REVERB=0` (presets `intel`,
+  `lightest`, `performance`) o desliga: a thread de áudio cai de 26% para 11%. Próximos ganhos: o despacho de
+  chamadas indiretas (`nx::call`, 2%), reverb nativo em vez do recompilado, cache de registradores no recompilador.
 
 ## Ferramentas de diagnóstico
 

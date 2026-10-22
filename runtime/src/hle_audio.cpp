@@ -692,3 +692,31 @@ NX_HLE("_ZN2nn5audio3dsp20CommandListProcessor7ProcessEv", CommandListProcessorP
 NX_HLE("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm", AudioRenderSystemUpdate);
 
 }  // namespace nx
+
+namespace nx {
+namespace {
+
+// NX_AUDIO_REVERB=0 (the light presets): the AudioRenderer's I3DL2 reverb runs bypassed. On the console the ADSP
+// renders it; here it is recompiled NEON on a CPU core, and in ACNH it was the costliest function of the process
+// (~20% of all CPU samples, one core busy). ApplyI3dl2ReverbEffect(parameter, state, enabled, inputs, outputs,
+// samples) copies the inputs through when not enabled: the sound keeps everything but the room reverb.
+void ApplyI3dl2ReverbEffect(CPU& c) {
+    static const uint64_t real = find_symbol(
+        "_ZN2nn5audio22ApplyI3dl2ReverbEffectERKNS0_20I3dl2ReverbParameterEPNS0_16I3dl2ReverbStateEbPPKiPPii");
+    static const bool off = [] {
+        const char* e = std::getenv("NX_AUDIO_REVERB");
+        bool o = e && e[0] == '0';
+        if (o) log("audio: I3DL2 reverb bypassed (NX_AUDIO_REVERB=0)");
+        return o;
+    }();
+    if (!real) return;
+    if (off) c.x[2] = 0;
+    call(c, real);
+}
+
+}  // namespace
+
+NX_HLE("_ZN2nn5audio22ApplyI3dl2ReverbEffectERKNS0_20I3dl2ReverbParameterEPNS0_16I3dl2ReverbStateEbPPKiPPii",
+       ApplyI3dl2ReverbEffect);
+
+}  // namespace nx
