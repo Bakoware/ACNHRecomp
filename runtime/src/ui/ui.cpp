@@ -17,7 +17,6 @@
 #include <chrono>
 #include <cmath>
 #include <deque>
-#include <filesystem>
 #include <map>
 #include <mutex>
 #include <string>
@@ -32,6 +31,7 @@
 #include "platform.h"
 #include "ui/i18n.h"
 #include "ui/settings.h"
+#include "ui/theme.h"
 #include "ui/ui_internal.h"
 
 namespace nx::ui {
@@ -148,33 +148,7 @@ void barrier(VkCommandBuffer cb, VkImage image, VkImageLayout from, VkImageLayou
     g_vk.CmdPipelineBarrier(cb, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
-// ---- fonts ----------------------------------------------------------------------------------------------------
-
-// A rounded sans font from the system for the menus, plus a CJK one when the menu language needs it. Searched in
-// the usual places of each OS; ImGui's built-in font when none is found.
-std::string find_font(bool cjk) {
-    namespace fs = std::filesystem;
-    std::vector<std::string> c;
-    std::string home = std::getenv("HOME") ? std::getenv("HOME") : "";
-    if (cjk) {
-        c = {"/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
-             "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc",
-             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/System/Library/Fonts/PingFang.ttc",
-             "/System/Library/Fonts/Hiragino Sans GB.ttc", "C:\\Windows\\Fonts\\msyhbd.ttc",
-             "C:\\Windows\\Fonts\\YuGothB.ttc", "C:\\Windows\\Fonts\\malgunbd.ttf"};
-    } else {
-        c = {plat::data_root() + "/fonts/ui.ttf",  // a font of the player's choice
-             "/usr/share/fonts/truetype/nunito/Nunito-Bold.ttf", "/usr/share/fonts/truetype/quicksand/Quicksand-Bold.ttf",
-             "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf", "/usr/share/fonts/noto/NotoSans-Bold.ttf",
-             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-             "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf", "/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf",
-             "/System/Library/Fonts/Helvetica.ttc", "C:\\Windows\\Fonts\\segoeuib.ttf", "C:\\Windows\\Fonts\\arialbd.ttf"};
-    }
-    std::error_code ec;
-    for (const auto& p : c)
-        if (fs::is_regular_file(fs::u8path(p), ec)) return p;
-    return "";
-}
+// ---- fonts and style (theme.h) --------------------------------------------------------------------------------
 
 float g_font_scale = 0;
 std::string g_font_lang;
@@ -182,102 +156,10 @@ ImFont* g_font_body = nullptr;
 ImFont* g_font_title = nullptr;
 
 void build_fonts(float scale) {
-    ImGuiIO& io = ImGui::GetIO();
-    io.Fonts->Clear();
-    const std::string& lang = ui_language();
-    bool cjk = lang == "ja" || lang == "ko" || lang == "zh-CN" || lang == "zh-TW";
-    std::string latin = find_font(false), extra = cjk ? find_font(true) : "";
-    static ImVector<ImWchar> ranges;  // Latin + Latin-1/Extended + Cyrillic + general punctuation + arrows/dashes
-    ranges.clear();
-    ImFontGlyphRangesBuilder rb;
-    rb.AddRanges(io.Fonts->GetGlyphRangesDefault());
-    rb.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
-    static const ImWchar more[] = {0x0100, 0x024F, 0x2000, 0x206F, 0x2190, 0x21FF, 0x2212, 0x2212, 0x25A0, 0x25FF, 0};
-    rb.AddRanges(more);
-    rb.BuildRanges(&ranges);
-    const ImWchar* cjk_ranges = lang == "ja"      ? io.Fonts->GetGlyphRangesJapanese()
-                                : lang == "ko"    ? io.Fonts->GetGlyphRangesKorean()
-                                : lang == "zh-TW" ? io.Fonts->GetGlyphRangesChineseFull()
-                                                  : io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
-    auto add = [&](float px) -> ImFont* {
-        ImFontConfig cfg;
-        cfg.OversampleH = 2;
-        ImFont* f = latin.empty() ? nullptr : io.Fonts->AddFontFromFileTTF(latin.c_str(), px, &cfg, ranges.Data);
-        if (!f) {
-            ImFontConfig d;
-            d.SizePixels = px;
-            f = io.Fonts->AddFontDefault(&d);
-        }
-        if (!extra.empty()) {
-            ImFontConfig m;
-            m.MergeMode = true;
-            m.OversampleH = 1;
-            io.Fonts->AddFontFromFileTTF(extra.c_str(), px, &m, cjk_ranges);
-        }
-        return f;
-    };
-    g_font_body = add(std::round(20.0f * scale));
-    g_font_title = add(std::round(30.0f * scale));
-    g_font_scale = scale, g_font_lang = lang;
+    ThemeFonts f = theme_build_fonts(scale, plat::data_root() + "/fonts/ui.ttf");  // a font of the player's choice
+    g_font_body = f.body, g_font_title = f.title;
+    g_font_scale = scale, g_font_lang = ui_language();
     if (g_imgui_ok) ImGui_ImplVulkan_CreateFontsTexture();
-}
-
-// ---- the Animal Crossing look ---------------------------------------------------------------------------------
-
-void apply_style(float scale) {
-    ImGuiStyle& s = ImGui::GetStyle();
-    s = ImGuiStyle();
-    s.WindowRounding = 28.0f;
-    s.ChildRounding = 22.0f;
-    s.FrameRounding = 14.0f;
-    s.PopupRounding = 16.0f;
-    s.GrabRounding = 14.0f;
-    s.TabRounding = 14.0f;
-    s.ScrollbarRounding = 12.0f;
-    s.WindowPadding = ImVec2(26, 22);
-    s.FramePadding = ImVec2(14, 8);
-    s.ItemSpacing = ImVec2(12, 12);
-    s.ItemInnerSpacing = ImVec2(10, 8);
-    s.ScrollbarSize = 14.0f;
-    s.GrabMinSize = 22.0f;
-    s.WindowBorderSize = 0;
-    s.ChildBorderSize = 0;
-    s.FrameBorderSize = 0;
-    s.PopupBorderSize = 0;
-    s.ScaleAllSizes(scale);
-    // Cream paper, brown ink, mint and yellow accents: the game's menus and NookPhone.
-    auto rgb = [](int r, int g, int b, float a = 1.0f) { return ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, a); };
-    ImVec4* c = s.Colors;
-    c[ImGuiCol_Text] = rgb(107, 79, 54);
-    c[ImGuiCol_TextDisabled] = rgb(170, 150, 120);
-    c[ImGuiCol_WindowBg] = rgb(255, 249, 232);
-    c[ImGuiCol_ChildBg] = rgb(248, 239, 214);
-    c[ImGuiCol_PopupBg] = rgb(255, 251, 240);
-    c[ImGuiCol_Border] = rgb(230, 214, 178);
-    c[ImGuiCol_FrameBg] = rgb(240, 228, 196);
-    c[ImGuiCol_FrameBgHovered] = rgb(248, 226, 150);
-    c[ImGuiCol_FrameBgActive] = rgb(255, 217, 102);
-    c[ImGuiCol_TitleBg] = rgb(124, 194, 103);
-    c[ImGuiCol_TitleBgActive] = rgb(124, 194, 103);
-    c[ImGuiCol_ScrollbarBg] = rgb(0, 0, 0, 0);
-    c[ImGuiCol_ScrollbarGrab] = rgb(214, 196, 158);
-    c[ImGuiCol_ScrollbarGrabHovered] = rgb(196, 176, 136);
-    c[ImGuiCol_ScrollbarGrabActive] = rgb(170, 150, 110);
-    c[ImGuiCol_CheckMark] = rgb(255, 255, 255);
-    c[ImGuiCol_SliderGrab] = rgb(78, 186, 160);
-    c[ImGuiCol_SliderGrabActive] = rgb(56, 160, 136);
-    c[ImGuiCol_Button] = rgb(118, 200, 170);
-    c[ImGuiCol_ButtonHovered] = rgb(255, 217, 102);
-    c[ImGuiCol_ButtonActive] = rgb(246, 196, 64);
-    c[ImGuiCol_Header] = rgb(255, 232, 160);
-    c[ImGuiCol_HeaderHovered] = rgb(255, 222, 128);
-    c[ImGuiCol_HeaderActive] = rgb(255, 210, 90);
-    c[ImGuiCol_Separator] = rgb(230, 214, 178);
-    c[ImGuiCol_Tab] = rgb(240, 228, 196);
-    c[ImGuiCol_TabHovered] = rgb(255, 222, 128);
-    c[ImGuiCol_TabSelected] = rgb(124, 194, 103);
-    c[ImGuiCol_NavCursor] = rgb(246, 170, 40);
-    c[ImGuiCol_ModalWindowDimBg] = rgb(60, 40, 20, 0.45f);
 }
 
 bool init_imgui(VkFormat format) {
@@ -371,12 +253,10 @@ void ui_record(VkCommandBuffer cb, VkImage image, VkFormat format, VkExtent2D ex
     if ((!g_visible && !hint) || !extent.width || !extent.height) return;
     if (!init_imgui(format)) return;
     ImGuiIO& io = ImGui::GetIO();
-    // Design size 1280x720: the shorter side decides (a portrait phone is laid out on its width).
-    float scale = std::clamp(std::min(extent.width / 1280.0f, extent.height / 720.0f), 0.6f, 4.0f);
-    if (extent.height > extent.width) scale = std::clamp(extent.width / 720.0f, 0.6f, 4.0f);
+    float scale = theme_scale(float(extent.width), float(extent.height));
     if (std::fabs(scale - g_font_scale) > 0.04f || g_font_lang != ui_language()) {
         build_fonts(scale);
-        apply_style(scale);
+        theme_apply_style(scale);
     }
     io.DisplaySize = ImVec2(float(extent.width), float(extent.height));
     static auto last = clock::now();

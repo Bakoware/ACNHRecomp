@@ -109,6 +109,17 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 29. `nvnCommandBufferCopyTextureToBuffer`: reproduzido como `vkCmdCopyImageToBuffer` e copiado para a memória do jogo
     depois do submit (o jogo lê de volta, por exemplo, a foto 500x500 do passaporte).
 
+30. **Recompilador: cache de registradores** (`recomp/regcache.py`): dentro de cada função os registradores gerais,
+    vetoriais e as flags NZCV do convidado viram variáveis locais em C++, sincronizadas com o `nx::CPU` só em chamadas,
+    `svc`, `setjmp`/`longjmp` e retornos, e só os que podem ter mudado (fluxo de dados "talvez sujo" sobre os `goto`).
+    Antes o clang recarregava `c.x[31]` e companhia depois de cada store do jogo (o ponteiro do convidado vem de um
+    inteiro e pode, para ele, apontar para o contexto). Reverb I3DL2 (`NX_PROFILE_REVERB=1`, mediana de 3000
+    repetições): 9,7 us por chamada antes; 7,1 só com as flags; 4,1-4,7 com tudo. Binário 6 MB menor e compilação
+    completa em 28 min. Validado na introdução inteira até a ilha. `NX_REGCACHE=0` no recompilador desliga.
+31. **Inicializador** (`launcher/`, `acnhrecomp_launcher`): programa sem código do jogo que pede chaves, jogo,
+    atualização e DLC, confere os arquivos e roda a recompilação no próprio computador (`setup_acnh.sh --out`), ou
+    abre uma versão já recompilada. Mesmo visual e idiomas da tela de configurações.
+
 ## Próximos passos (pedidos)
 
 - **60 fps**: medido: a lógica do ACNH avança **por quadro** (uma fala é digitada em ~115 quadros tanto a 30 quanto

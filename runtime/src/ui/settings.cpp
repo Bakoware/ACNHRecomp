@@ -26,6 +26,7 @@
 #include "platform.h"
 #include "saves.h"
 #include "ui/i18n.h"
+#include "ui/theme.h"
 #include "ui/ui_internal.h"
 
 namespace nx::ui {
@@ -56,46 +57,6 @@ bool g_restart_note = false;
 void toast(const std::string& text) {
     g_toast = text;
     g_toast_until = ImGui::GetTime() + 4.0;
-}
-
-// Simple vector icons inside the page buttons, drawn at centre c with radius r.
-void draw_icon(ImDrawList* dl, int icon, ImVec2 c, float r, ImU32 col) {
-    float t = std::max(1.5f, r * 0.14f);
-    switch (icon) {
-        case 0: {  // leaf
-            dl->AddBezierQuadratic(ImVec2(c.x - r * 0.6f, c.y + r * 0.6f), ImVec2(c.x - r * 0.7f, c.y - r * 0.8f),
-                                   ImVec2(c.x + r * 0.6f, c.y - r * 0.6f), col, t);
-            dl->AddBezierQuadratic(ImVec2(c.x - r * 0.6f, c.y + r * 0.6f), ImVec2(c.x + r * 0.8f, c.y + r * 0.7f),
-                                   ImVec2(c.x + r * 0.6f, c.y - r * 0.6f), col, t);
-            dl->AddLine(ImVec2(c.x - r * 0.6f, c.y + r * 0.6f), ImVec2(c.x + r * 0.2f, c.y - r * 0.2f), col, t);
-            break;
-        }
-        case 1:  // screen
-            dl->AddRect(ImVec2(c.x - r * 0.7f, c.y - r * 0.5f), ImVec2(c.x + r * 0.7f, c.y + r * 0.35f), col, r * 0.12f, 0, t);
-            dl->AddLine(ImVec2(c.x - r * 0.3f, c.y + r * 0.65f), ImVec2(c.x + r * 0.3f, c.y + r * 0.65f), col, t);
-            break;
-        case 2:  // note
-            dl->AddCircleFilled(ImVec2(c.x - r * 0.3f, c.y + r * 0.45f), r * 0.25f, col);
-            dl->AddLine(ImVec2(c.x - r * 0.07f, c.y + r * 0.45f), ImVec2(c.x - r * 0.07f, c.y - r * 0.6f), col, t);
-            dl->AddLine(ImVec2(c.x - r * 0.07f, c.y - r * 0.6f), ImVec2(c.x + r * 0.5f, c.y - r * 0.35f), col, t);
-            break;
-        case 3:  // controller
-            dl->AddRect(ImVec2(c.x - r * 0.75f, c.y - r * 0.35f), ImVec2(c.x + r * 0.75f, c.y + r * 0.4f), col, r * 0.35f, 0, t);
-            dl->AddLine(ImVec2(c.x - r * 0.45f, c.y), ImVec2(c.x - r * 0.15f, c.y), col, t);
-            dl->AddLine(ImVec2(c.x - r * 0.3f, c.y - r * 0.15f), ImVec2(c.x - r * 0.3f, c.y + r * 0.15f), col, t);
-            dl->AddCircleFilled(ImVec2(c.x + r * 0.35f, c.y), r * 0.1f, col);
-            break;
-        case 4:  // house
-            dl->AddTriangle(ImVec2(c.x, c.y - r * 0.7f), ImVec2(c.x - r * 0.75f, c.y - r * 0.05f),
-                            ImVec2(c.x + r * 0.75f, c.y - r * 0.05f), col, t);
-            dl->AddRect(ImVec2(c.x - r * 0.5f, c.y - r * 0.05f), ImVec2(c.x + r * 0.5f, c.y + r * 0.6f), col, 0, 0, t);
-            break;
-        default:  // info
-            dl->AddCircle(c, r * 0.7f, col, 0, t);
-            dl->AddLine(ImVec2(c.x, c.y - r * 0.05f), ImVec2(c.x, c.y + r * 0.4f), col, t);
-            dl->AddCircleFilled(ImVec2(c.x, c.y - r * 0.32f), t * 0.8f, col);
-            break;
-    }
 }
 
 // ---- settings helpers -----------------------------------------------------------------------------------------
@@ -530,7 +491,7 @@ bool settings_draw(float scale, ImFont* title) {
         ImVec2 p = ImGui::GetCursorScreenPos();
         float h = 56.0f * scale, w = ImGui::GetContentRegionAvail().x;
         dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), rgb(124, 194, 103), h * 0.5f);
-        draw_icon(dl, 0, ImVec2(p.x + h * 0.55f, p.y + h * 0.5f), h * 0.36f, rgb(255, 255, 255));
+        theme_icon(dl, 0, ImVec2(p.x + h * 0.55f, p.y + h * 0.5f), h * 0.36f, rgb(255, 255, 255));
         ImGui::PushFont(title);
         ImVec2 ts = ImGui::CalcTextSize(tr("app.title"));
         dl->AddText(ImVec2(p.x + h * 1.1f, p.y + (h - ts.y) * 0.5f), rgb(255, 255, 255), tr("app.title"));
@@ -562,7 +523,7 @@ bool settings_draw(float scale, ImFont* title) {
         cl->AddRectFilled(p, q, sel ? kPages[k].color : (hov ? rgb(255, 232, 160) : rgb(248, 239, 214)), bh * 0.5f);
         cl->AddCircleFilled(ImVec2(p.x + bh * 0.5f, p.y + bh * 0.5f), bh * 0.36f,
                             sel ? rgb(255, 255, 255, 70) : kPages[k].color);
-        draw_icon(cl, kPages[k].icon, ImVec2(p.x + bh * 0.5f, p.y + bh * 0.5f), bh * 0.3f, rgb(255, 255, 255));
+        theme_icon(cl, kPages[k].icon, ImVec2(p.x + bh * 0.5f, p.y + bh * 0.5f), bh * 0.3f, rgb(255, 255, 255));
         ImVec2 ts = ImGui::CalcTextSize(label);
         cl->AddText(ImVec2(p.x + bh + 6 * scale, p.y + (bh - ts.y) * 0.5f), sel ? rgb(255, 255, 255) : rgb(107, 79, 54),
                     label);

@@ -60,7 +60,17 @@ if(NX_TESTS AND NOT ANDROID)
     endif()
 endif()
 
-# Without the generated code (a checkout with no game data) only the tests above are built.
+# Dear ImGui: the settings screen and the launcher. tools/setup_acnh.sh downloads it into private/third_party/imgui.
+set(NX_IMGUI_DIR "${CMAKE_SOURCE_DIR}/private/third_party/imgui" CACHE PATH "Dear ImGui sources")
+
+# The launcher (launcher/): the program a player opens first. It has no game code, so it builds from a plain
+# checkout (cmake --build <dir> --target acnhrecomp_launcher) and leaves the game's targets as they are.
+option(NX_LAUNCHER "Build the first-run launcher (acnhrecomp_launcher)" ON)
+if(NX_LAUNCHER AND NOT ANDROID)
+    include(launcher/launcher.cmake)
+endif()
+
+# Without the generated code (a checkout with no game data) only the tests and the launcher above are built.
 file(GLOB NX_GEN_PROBE "${NX_GEN_DIR}/main/*.cpp")
 if(NOT NX_GEN_PROBE)
     message(WARNING "No generated code in ${NX_GEN_DIR}/main: building the unit tests only")
@@ -240,12 +250,11 @@ else()
     endif()
 endif()
 
-# The settings screen (runtime/src/ui): Dear ImGui, downloaded by tools/setup_acnh.sh into private/third_party/imgui.
-# Without it (or on Windows/Android until their platform layers feed it) the screen is a stub; config.ini still works.
-set(NX_IMGUI_DIR "${CMAKE_SOURCE_DIR}/private/third_party/imgui" CACHE PATH "Dear ImGui sources")
+# The settings screen (runtime/src/ui): Dear ImGui (NX_IMGUI_DIR, above). Without it (or on Windows/Android until
+# their platform layers feed it) the screen is a stub; config.ini still works.
 if(EXISTS "${NX_IMGUI_DIR}/imgui.cpp" AND NOT ANDROID AND NOT WIN32)
     target_sources(${NX_GAME} PRIVATE runtime/src/ui/ui.cpp runtime/src/ui/settings.cpp runtime/src/ui/i18n.cpp
-        ${NX_IMGUI_DIR}/imgui.cpp ${NX_IMGUI_DIR}/imgui_draw.cpp ${NX_IMGUI_DIR}/imgui_tables.cpp
+        runtime/src/ui/theme.cpp ${NX_IMGUI_DIR}/imgui.cpp ${NX_IMGUI_DIR}/imgui_draw.cpp ${NX_IMGUI_DIR}/imgui_tables.cpp
         ${NX_IMGUI_DIR}/imgui_widgets.cpp ${NX_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
     target_include_directories(${NX_GAME} PRIVATE ${NX_IMGUI_DIR})
     target_compile_definitions(${NX_GAME} PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES NX_HAVE_SDL3)

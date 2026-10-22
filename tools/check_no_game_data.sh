@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Refuses to let game data, keys or recompiled code into a commit. Run before every push
 # (or install as a hook: ln -s ../../tools/check_no_game_data.sh .git/hooks/pre-commit).
-# Checks the staged files: no private/ or refs/ paths, no dump/key/shader/binary extensions, no binary blobs,
+# Checks the staged files: no private/ or refs/ paths, no dump/key/shader/binary extensions, no binary blobs (except
+# README screenshots in docs/screenshots/),
 # no generated recompiler output (function bodies named after guest addresses), no key material.
 cd "$(git rev-parse --show-toplevel)" || exit 1
 bad=0
@@ -13,6 +14,10 @@ while IFS= read -r f; do
   case "${f,,}" in
     *.nsp|*.xci|*.nca|*.nso|*.npdm|*.keys|*.tik|*.cert|*.spv|*.bin|*.bfsha|*.bntx|*.szs|*.zs|*.sarc|*.bfres|*.ttf|*.otf)
       echo "BLOCKED (game/derived file type): $f"; bad=1; continue ;;
+  esac
+  # README screenshots (pictures of the running game, no game files) are the only binaries allowed.
+  case "${f,,}" in
+    docs/screenshots/*.png|docs/screenshots/*.jpg) continue ;;
   esac
   if [ "$(head -c 8000 "$f" | tr -d '\000' | wc -c)" -ne "$(head -c 8000 "$f" | wc -c)" ]; then
     echo "BLOCKED (binary content): $f"; bad=1; continue

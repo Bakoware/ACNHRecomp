@@ -2,6 +2,10 @@
 
 **A native PC port of Animal Crossing: New Horizons, made by static recompilation.**
 
+<p align="center">
+  <img src="docs/screenshots/island-arrival.jpg" alt="Arriving on the island, running natively" width="100%">
+</p>
+
 ACNHRecomp turns the Nintendo Switch code of *Animal Crossing: New Horizons* **3.0.2** (title ID
 `01006F8002326000`) into native code for your computer. It is not an emulator: the game's AArch64 machine code is
 translated ahead of time into C++ and compiled for the host, the system services the game calls are reimplemented
@@ -21,6 +25,7 @@ natively, and the game's NVN graphics calls are translated to **Vulkan**. It is 
 ## Contents
 
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Status](#status)
 - [Disclaimer](#disclaimer)
 - [Requirements](#requirements)
@@ -60,6 +65,28 @@ natively, and the game's NVN graphics calls are translated to **Vulkan**. It is 
 - **Performance work for modest hardware:** presets for integrated GPUs, an option to bypass the CPU-heavy audio
   reverb, pipelined GPU submits, AES-NI acceleration of the game's data decryption during loads, and a shader
   pre-compilation pass at startup.
+
+## Screenshots
+
+Captured from the recompiled game running on Linux (x86-64, Vulkan), at 1080p.
+
+| | |
+|:---:|:---:|
+| ![The island from above](docs/screenshots/island-aerial.jpg) | ![Walking among the island's trees](docs/screenshots/island-trees.jpg) |
+| *The island from the seaplane* | *Exploring the island* |
+| ![Tom Nook's welcome at Nook Inc.](docs/screenshots/nook-inc.jpg) | ![Choosing a character style](docs/screenshots/character-style.jpg) |
+| *Nook Inc.'s Deserted Island Getaway Package* | *Creating a resident* |
+| ![Picking an island layout](docs/screenshots/island-choice.jpg) | ![Brazilian Portuguese fan translation](docs/screenshots/ptbr-dialogue.jpg) |
+| *Picking an island layout* | *Brazilian Portuguese through a fan-translation mod* |
+
+### Settings and launcher
+
+| | |
+|:---:|:---:|
+| ![Settings screen, video page](docs/screenshots/settings-video.jpg) | ![Settings screen, controls page](docs/screenshots/settings-controls.jpg) |
+| *In-game settings (F1): video* | *In-game settings: controls* |
+| ![Launcher welcome page](docs/screenshots/launcher-welcome.jpg) | ![Launcher building the game](docs/screenshots/launcher-build.jpg) |
+| *The launcher: first start* | *The launcher recompiling the game on your computer* |
 
 ## Status
 
@@ -155,6 +182,48 @@ shader translator source and Dear ImGui.
 
 ## Installation
 
+### With the launcher (recommended)
+
+The launcher is a small program, built from this repository alone, that does the whole setup with you: it asks
+for your files, checks this computer, recompiles the game and then starts it. It uses the same look as the in-game
+settings screen, follows the system language (12 languages, changeable at any time from the top right) and works
+from small laptop screens to 4K.
+
+```sh
+git clone <this repository> ACNHRecomp && cd ACNHRecomp
+tools/launcher.sh            # builds the launcher the first time (cmake, a C++ compiler and SDL3), then opens it
+```
+
+By hand: `cmake -S . -B build/launcher -DNX_GAME=acnh && cmake --build build/launcher --target acnhrecomp_launcher`,
+then run `build/launcher/acnhrecomp_launcher`.
+
+1. **Welcome.** Choose *Set up from my game files*, or *I already have a recompiled build* and pick its folder (an
+   install folder made by the launcher, `private/acnh`, or this repository).
+2. **Game files.** The keys (`prod.keys`, found automatically in `~/.switch` and the emulators' folders), the base
+   game (NSP or XCI), update 3.0.2 (NSP), any DLC NSPs and, optionally, the pt-BR translation `.zip` (not
+   distributed here). Choose them or drop them on the window. Each file is checked at once without decrypting
+   anything: container type, and the title and version from the NSP's metadata, so a wrong game, the update in
+   the base game's place or another update version is flagged before anything runs.
+3. **Install.** Where the game goes (default `~/.local/share/ACNHRecomp`, `~/Library/Application Support/ACNHRecomp`
+   on macOS), and a check of this computer: compiler, Python, curl/tar, SDL3 development files, Vulkan driver,
+   movie libraries, disk space and memory, with the command that installs what is missing.
+4. **Build.** Runs `tools/setup_acnh.sh --out <install folder>` and follows it: stages, progress (ninja's own
+   counter during the compile, with an estimate of the time left), the full log, Stop. If a stage fails, the page
+   says which, keeps the log open and offers *Copy log*, *Open logs folder* and *Try again* (finished stages are
+   not redone).
+5. **Play.** Starts the game with its data folder (`NX_DATA_ROOT`), and the launcher closes.
+
+On later starts the launcher opens on a home page: **Play**, **Settings** (game language including pt-BR, display,
+rendering, upscaling, frame rate; written to the game's `config.ini`), **Rebuild** (after updating the
+repository) and **Change build folder**. Its own settings are in `launcher.ini` in the user's settings folder
+(`~/.local/share/ACNHRecomp` on Linux).
+
+Windows: the launcher builds and runs (`cmake --build ... --target acnhrecomp_launcher` with SDL3 available to
+CMake), and can start a build made elsewhere, but the recompile pipeline is a bash script: run the setup on Linux,
+macOS or inside WSL2, then choose that folder.
+
+### From the command line
+
 ```sh
 git clone <this repository> ACNHRecomp && cd ACNHRecomp
 tools/setup_acnh.sh --keys ~/switch/prod.keys --title-keys ~/switch/title.keys \
@@ -164,6 +233,9 @@ tools/setup_acnh.sh --keys ~/switch/prod.keys --title-keys ~/switch/title.keys \
 
 `--dlc` can be repeated, once per add-on NSP, or left out. To add a DLC later, run the same command again with the
 `--dlc` options; the existing import is reused.
+
+`--out <folder>` puts the game's files (import, generated code, build, logs) in that folder instead of
+`private/acnh`; start the game from such a folder with `NX_DATA_ROOT=<folder> <folder>/build/acnh`.
 
 The script runs in stages and skips every stage whose output already exists. If something fails, fix it and run
 `tools/setup_acnh.sh` again (after the first import no arguments are needed).
@@ -423,7 +495,8 @@ No. A build contains recompiled game code, so it has to be produced from your ow
 | `games/acnh/` | ACNH-specific code (name, program ID, engine hooks, diagnostics) |
 | `tools/importer/` | NSP/XCI import: keys, tickets, NCA, BKTR, RomFS |
 | `tools/maxwell/` | Shader container extraction and the Maxwell to SPIR-V harness |
-| `tools/setup_acnh.sh`, `tools/acnh_linux.sh`, `tools/acnh_mac.sh` | Setup and launch scripts |
+| `launcher/` | The first-run launcher: file checks, setup pipeline, home page (no game code) |
+| `tools/setup_acnh.sh`, `tools/launcher.sh`, `tools/acnh_linux.sh`, `tools/acnh_mac.sh` | Setup and launch scripts |
 | `tools/check_no_game_data.sh` | Pre-commit hook that blocks game data |
 | `tests/` | Recompiler differential test (Unicorn) and runtime unit tests |
 | `docs/` | `STATUS.md` (progress), `ACNH.md` (the game), `REFERENCES.md` (reference projects), `upstream/` (framework docs) |
@@ -460,9 +533,14 @@ No. A build contains recompiled game code, so it has to be produced from your ow
    which record command buffers and replay them in Vulkan. Shaders are translated **ahead of time** from Maxwell to
    SPIR-V with the Ryujinx/Ryubing translator, keyed by the hash of the code block. Textures are de-tiled from the
    block-linear layout, and ASTC/BCn are decoded.
-5. **Performance.** The game decrypts its data with AArch64 AES instructions while loading; on x86 they map to
-   AES-NI when the CPU has it (the software path cost about 1000 times more). Vulkan pipelines are cached on disk
-   and can be prepared at startup.
+5. **Performance.** Inside each recompiled function the guest's general, vector and flag registers live in C++
+   locals rather than in the CPU context in memory (`recomp/regcache.py`). They are written back only around calls,
+   system calls and returns, and only when they may have changed. The host compiler can then keep them in machine
+   registers instead of reloading them after every guest store. The I3DL2 reverb, the costliest guest function,
+   runs about 2.2 times faster this way; the gain is larger on ARM64 hosts, which have as many registers as the
+   guest. The game decrypts its data with AArch64 AES instructions while loading; on x86 they map to AES-NI when
+   the CPU has it (the software path cost about 1000 times more). Vulkan pipelines are cached on disk and can be
+   prepared at startup.
 
 More detail: [docs/ACNH.md](docs/ACNH.md) (the game's modules, RomFS and shader containers),
 [docs/STATUS.md](docs/STATUS.md) (problems found and fixed) and [docs/upstream/](docs/upstream/) (the framework).

@@ -6,20 +6,22 @@
 #                              [--dlc <add-on.nsp>]...   (add-on content: imported to private/acnh/aoc/<index>/)
 #                              [--mod <name>=<zip>]...   (a RomFS mod, e.g. --mod ptbr=acnh_ptbr_beta4.zip: the pt-BR
 #                                                         fan translation; private/acnh/mods/<name>/romfs/)
+#                              [--out <folder>]          (the game's folder: import, generated code, build; default
+#                                                         private/acnh. The launcher passes its install folder)
 #          tools/setup_acnh.sh                       (later runs: the import is done, the rest is checked)
 #   env:   JOBS=<compile jobs> (default: RAM in GB / 3, at most the core count)   FORCE=<stage> to redo one stage
 #
 # Stages: tools (venv, Vulkan headers, .NET, Ryujinx source, hactool-free importer) -> import -> recompile ->
-# shaders -> build. Everything it writes stays in private/ (gitignored).
+# shaders -> fonts -> build. Everything it writes stays in private/ (gitignored) and the --out folder. The lines
+# starting with "== " name the stage that begins: the launcher (launcher/) follows them.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 P=$ROOT/private
 T=$P/third_party
 G=$P/acnh
-mkdir -p "$P" "$T" "$G/logs"
 
-KEYS="" TKEYS="" BASE="" UPD="" DLC=() MODS=()
+KEYS="" TKEYS="" BASE="" UPD="" DLC=() MODS=() OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --keys) KEYS=$2; shift 2 ;;
@@ -28,9 +30,12 @@ while [ $# -gt 0 ]; do
     --update) UPD=$2; shift 2 ;;
     --dlc) DLC+=("$2"); shift 2 ;;
     --mod) MODS+=("$2"); shift 2 ;;
+    --out) OUT=$2; shift 2 ;;
     *) echo "unknown argument $1"; exit 1 ;;
   esac
 done
+[ -n "$OUT" ] && { mkdir -p "$OUT"; G=$(cd "$OUT" && pwd); }
+mkdir -p "$P" "$T" "$G/logs"
 
 say() { printf '\n== %s\n' "$*"; }
 need() { command -v "$1" >/dev/null || { echo "missing: $1 (see README, Requirements)"; exit 1; }; }
@@ -163,6 +168,7 @@ fi
 head -1 "$G/spirv/summary.txt"
 
 # ---- fonts ----------------------------------------------------------------------------------------------------
+say "fonts (button icons)"
 mkdir -p "$G/fonts"
 # Stand-in for the Switch's button-icon font (type 5), drawn over a host font. The other shared fonts fall back
 # to host fonts (runtime/src/hle_pl.cpp); ACNH ships its own fonts in its RomFS for almost all text.
@@ -182,8 +188,13 @@ fi
 # ---- build ----------------------------------------------------------------------------------------------------
 say "build (-j$JOBS; the first build takes 40-90 minutes)"
 EXTRA=()
+[ -n "$OUT" ] && EXTRA+=(-DNX_GEN_DIR="$G/gen")  # the default build reads private/acnh/gen
 [ "$(uname)" = Darwin ] && EXTRA+=(-DCMAKE_PREFIX_PATH="$(brew --prefix 2>/dev/null || echo /opt/homebrew)")
 CC=clang CXX=clang++ "$CMAKE" -S . -B "$G/build" -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" -DNX_GAME=acnh \
   -DCMAKE_BUILD_TYPE=Release -DNX_VULKAN_INCLUDE="$VKH/include" "${EXTRA[@]}" > "$G/logs/cmake.log"
 "$NINJA" -C "$G/build" -j"$JOBS" acnh
-say "done: tools/acnh_linux.sh   (macOS: tools/acnh_mac.sh)"
+if [ -n "$OUT" ]; then
+  say "done: $G/build/acnh   (NX_DATA_ROOT=$G)"
+else
+  say "done: tools/acnh_linux.sh   (macOS: tools/acnh_mac.sh)"
+fi

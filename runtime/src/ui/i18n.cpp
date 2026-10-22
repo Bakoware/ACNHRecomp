@@ -1620,33 +1620,38 @@ const Entry kZhTw[] = {
     {"about.license", "以 MIT 授權條款開放原始碼。"},
 };
 
+// The launcher's texts (launcher/): kLauncherEn, kLauncherPtBr, ...
+#include "i18n_launcher.inc"
+
 // clang-format on
 
 struct Language {
     UiLanguage info;
     const Entry* entries;
     size_t count;
+    const Entry* launcher;
+    size_t launcher_count;
 };
 
-template <size_t N>
-constexpr Language lang(const char* code, const char* name, const Entry (&entries)[N]) {
-    return {{code, name}, entries, N};
+template <size_t N, size_t M>
+constexpr Language lang(const char* code, const char* name, const Entry (&entries)[N], const Entry (&launcher)[M]) {
+    return {{code, name}, entries, N, launcher, M};
 }
 
 // Display order; index 0 is the fallback (English).
 const Language kLanguages[] = {
-    lang("en", "English", kEn),
-    lang("pt-BR", "Português (Brasil)", kPtBr),
-    lang("es", "Español", kEs),
-    lang("fr", "Français", kFr),
-    lang("de", "Deutsch", kDe),
-    lang("it", "Italiano", kIt),
-    lang("nl", "Nederlands", kNl),
-    lang("ru", "Русский", kRu),
-    lang("ja", "日本語", kJa),
-    lang("ko", "한국어", kKo),
-    lang("zh-CN", "简体中文", kZhCn),
-    lang("zh-TW", "繁體中文", kZhTw),
+    lang("en", "English", kEn, kLauncherEn),
+    lang("pt-BR", "Português (Brasil)", kPtBr, kLauncherPtBr),
+    lang("es", "Español", kEs, kLauncherEs),
+    lang("fr", "Français", kFr, kLauncherFr),
+    lang("de", "Deutsch", kDe, kLauncherDe),
+    lang("it", "Italiano", kIt, kLauncherIt),
+    lang("nl", "Nederlands", kNl, kLauncherNl),
+    lang("ru", "Русский", kRu, kLauncherRu),
+    lang("ja", "日本語", kJa, kLauncherJa),
+    lang("ko", "한국어", kKo, kLauncherKo),
+    lang("zh-CN", "简体中文", kZhCn, kLauncherZhCn),
+    lang("zh-TW", "繁體中文", kZhTw, kLauncherZhTw),
 };
 constexpr size_t kLanguageCount = sizeof(kLanguages) / sizeof(kLanguages[0]);
 
@@ -1656,12 +1661,17 @@ using Texts = std::array<const char*, kLanguageCount>;
 const std::unordered_map<std::string_view, Texts>& index() {
     static const std::unordered_map<std::string_view, Texts> map = [] {
         std::unordered_map<std::string_view, Texts> m;
-        m.reserve(kLanguages[0].count);
-        for (size_t l = 0; l < kLanguageCount; l++)
+        m.reserve(kLanguages[0].count + kLanguages[0].launcher_count);
+        for (size_t l = 0; l < kLanguageCount; l++) {
             for (size_t i = 0; i < kLanguages[l].count; i++) {
                 const Entry& e = kLanguages[l].entries[i];
                 m.try_emplace(e.key).first->second[l] = e.text;  // try_emplace value-initializes: all nullptr
             }
+            for (size_t i = 0; i < kLanguages[l].launcher_count; i++) {
+                const Entry& e = kLanguages[l].launcher[i];
+                m.try_emplace(e.key).first->second[l] = e.text;
+            }
+        }
         return m;
     }();
     return map;
