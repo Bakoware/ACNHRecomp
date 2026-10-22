@@ -195,8 +195,14 @@ NX_INLINE T amo_minmax(T* p, T v) {
 NX_INLINE void barrier() { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
 
 // ---- flags --------------------------------------------------------------------------------------------------
+// The helpers take the CPU or a function's local copy of the flags (recomp/regcache.py keeps NZCV in a Flags local).
 
-NX_INLINE uint64_t adds64(CPU& c, uint64_t a, uint64_t b, uint64_t carry) {
+struct Flags {
+    uint8_t nf, zf, cf, vf;
+};
+
+template <class S>
+NX_INLINE uint64_t adds64(S& c, uint64_t a, uint64_t b, uint64_t carry) {
     uint64_t r = a + b + carry;
     c.nf = r >> 63;
     c.zf = r == 0;
@@ -205,7 +211,8 @@ NX_INLINE uint64_t adds64(CPU& c, uint64_t a, uint64_t b, uint64_t carry) {
     return r;
 }
 
-NX_INLINE uint32_t adds32(CPU& c, uint32_t a, uint32_t b, uint32_t carry) {
+template <class S>
+NX_INLINE uint32_t adds32(S& c, uint32_t a, uint32_t b, uint32_t carry) {
     uint64_t wide = uint64_t(a) + b + carry;
     uint32_t r = uint32_t(wide);
     c.nf = r >> 31;
@@ -215,36 +222,42 @@ NX_INLINE uint32_t adds32(CPU& c, uint32_t a, uint32_t b, uint32_t carry) {
     return r;
 }
 
-NX_INLINE uint64_t subs64(CPU& c, uint64_t a, uint64_t b) { return adds64(c, a, ~b, 1); }
-NX_INLINE uint32_t subs32(CPU& c, uint32_t a, uint32_t b) { return adds32(c, a, ~b, 1); }
+template <class S>
+NX_INLINE uint64_t subs64(S& c, uint64_t a, uint64_t b) { return adds64(c, a, ~b, 1); }
+template <class S>
+NX_INLINE uint32_t subs32(S& c, uint32_t a, uint32_t b) { return adds32(c, a, ~b, 1); }
 
-NX_INLINE void logic64(CPU& c, uint64_t r) {
+template <class S>
+NX_INLINE void logic64(S& c, uint64_t r) {
     c.nf = r >> 63;
     c.zf = r == 0;
     c.cf = 0;
     c.vf = 0;
 }
 
-NX_INLINE void logic32(CPU& c, uint32_t r) {
+template <class S>
+NX_INLINE void logic32(S& c, uint32_t r) {
     c.nf = r >> 31;
     c.zf = r == 0;
     c.cf = 0;
     c.vf = 0;
 }
 
-NX_INLINE void set_nzcv(CPU& c, uint32_t nzcv) {
+template <class S>
+NX_INLINE void set_nzcv(S& c, uint32_t nzcv) {
     c.nf = (nzcv >> 3) & 1;
     c.zf = (nzcv >> 2) & 1;
     c.cf = (nzcv >> 1) & 1;
     c.vf = nzcv & 1;
 }
 
-NX_INLINE uint64_t get_nzcv(const CPU& c) {
+template <class S>
+NX_INLINE uint64_t get_nzcv(const S& c) {
     return (uint64_t(c.nf) << 31) | (uint64_t(c.zf) << 30) | (uint64_t(c.cf) << 29) | (uint64_t(c.vf) << 28);
 }
 
-template <typename F>
-NX_INLINE void fcmp(CPU& c, F a, F b) {
+template <typename F, class S>
+NX_INLINE void fcmp(S& c, F a, F b) {
     if (std::isnan(a) || std::isnan(b))
         set_nzcv(c, 0b0011);
     else if (a == b)

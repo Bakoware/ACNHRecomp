@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -717,6 +718,29 @@ void ApplyI3dl2ReverbEffect(CPU& c) {
     const bool off = env_off || cfg_off;
     if (!real) return;
     if (off) c.x[2] = 0;
+    // NX_PROFILE_REVERB=1: a fixed workload to compare recompiler builds. The 500th enabled call is repeated 3000 times
+    // on the same arguments (its output buffers are rewritten each time) and the median thread CPU time is logged.
+    static const bool prof = std::getenv("NX_PROFILE_REVERB") != nullptr;
+    static int seen = 0;
+    if (prof && !off && c.x[2] && ++seen == 500) {
+        auto now = [] {
+            timespec ts;
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+            return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
+        };
+        const CPU saved = c;
+        std::vector<uint64_t> t(3000);
+        for (auto& v : t) {
+            c = saved;
+            const uint64_t t0 = now();
+            call(c, real);
+            v = now() - t0;
+        }
+        std::sort(t.begin(), t.end());
+        log("audio: reverb benchmark: median %llu ns, best %llu ns per call", (unsigned long long)t[t.size() / 2],
+            (unsigned long long)t[0]);
+        c = saved;
+    }
     call(c, real);
 }
 

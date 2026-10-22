@@ -11,6 +11,8 @@ import struct
 import capstone
 from capstone import arm64_const as A
 
+from . import regcache
+
 B = "NXB"
 
 CC = {
@@ -277,7 +279,7 @@ class Emitter(Sdk20Ops, ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
             out.append("        js_[jr_].restore(c); c.x[0] = e_.val ? e_.val : 1;")
             out.append("    } }")
         out.append("}")
-        return "\n".join(out)
+        return "\n".join(regcache.apply(out, 0))
 
     # ---- instruction dispatch -----------------------------------------------------------------------------
 
