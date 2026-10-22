@@ -346,8 +346,11 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
         return -1;
     };
     auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout < 0 ? 0 : timeout);
+    // A CancelSynchronization that came before this wait is kept until a wait consumes it, in KSynchronizationObject::
+    // Wait's order: a signaled object first, then a zero timeout, then the pending cancel. nn::os::MultiWait (WaitAny
+    // over os::Events) is woken this way when an event is signaled; clearing the flag on entry lost the wakeups that
+    // raced the wait, and the waiter slept with its event set (ACNH's movie player stalled at a random frame).
     KThread* self = t_self;
-    self->cancel = false;
     g_sync_waiters.push_back(self);
     struct Leave {
         KThread* t;
@@ -360,11 +363,11 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
             objs[i]->consume();
             return 0;
         }
+        if (timeout == 0) return 0xEA01;
         if (self->cancel) {
             self->cancel = false;
             return 0xEC01;
         }
-        if (timeout == 0) return 0xEA01;
         if (timeout < 0)
             self->cv.wait(lk);
         else if (self->cv.wait_until(lk, until) == std::cv_status::timeout && ready() < 0)

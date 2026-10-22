@@ -4,6 +4,7 @@
 // Without a device the same pacing runs on a timer. Audio input reports no devices. SDK 16 games (Wonder) use the
 // AudioRenderer instead, rendered in process; its final mix goes to the same device (see below).
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -35,6 +36,21 @@ struct Out {
 };
 Out g_out;
 float g_out_volume = 1.0f;
+std::atomic<uint64_t> g_out_appended{0}, g_out_played{0}, g_out_taken{0}, g_out_polls{0};
+
+// Every 2 s while an AudioOut is open: how its buffers move (NX_AUDIO_OUT_STATS=1).
+void out_stats() {
+    static const bool on = std::getenv("NX_AUDIO_OUT_STATS") != nullptr;
+    static uint64_t next = 0;
+    if (!on) return;
+    uint64_t now = plat::monotonic_ns();
+    if (now < next) return;
+    next = now + 2'000'000'000ull;
+    log("audio: AudioOut %s: %llu appended, %llu played, %llu taken back (%llu polls); %zu queued, %zu released",
+        g_out.started ? "started" : "stopped", (unsigned long long)g_out_appended.load(),
+        (unsigned long long)g_out_played.load(), (unsigned long long)g_out_taken.load(),
+        (unsigned long long)g_out_polls.load(), g_out.queued.size(), g_out.released.size());
+}
 
 // While an AudioRenderer is running it owns the device; AudioOut buffers (ACNH: the opening movie's sound) are then
 // added into the renderer's final mix instead of queued after it. Bounded to 200 ms so a stalled renderer cannot
@@ -45,6 +61,7 @@ bool renderer_running();
 
 void release(void* ctx) {
     std::lock_guard lk(g_out.lock);
+    g_out_played++;
     g_out.released.push_back(reinterpret_cast<uint64_t>(ctx));
     g_out.event->signaled = true;
     notify_all();
@@ -81,6 +98,7 @@ void player() {
                 return g_out.started && !g_out.queued.empty() && (!device || plat::audio_queued() < kMaxInFlight);
             };
             g_out.cv.wait_for(lk, std::chrono::milliseconds(5), ready);
+            out_stats();
             if (!ready()) continue;
             buf = g_out.queued.front();
             g_out.queued.pop_front();
@@ -150,11 +168,13 @@ void StartAudioOut(CPU& c) {
 }
 
 void StopAudioOut(CPU&) {
+    log("audio: AudioOut stopped");
     std::lock_guard lk(g_out.lock);
     g_out.started = false;
 }
 
 void CloseAudioOut(CPU&) {
+    log("audio: AudioOut closed");
     std::lock_guard lk(g_out.lock);
     g_out.started = false;
     g_out.queued.clear(), g_out.released.clear();
@@ -181,7 +201,12 @@ void SetAudioOutBufferInfo(CPU& c) {  // (AudioOutBuffer*, void* data, size_t ca
 void GetAudioOutBufferDataPointer(CPU& c) { c.x[0] = ld<uint64_t>(c.x[0]); }
 
 void AppendAudioOutBuffer(CPU& c) {  // (AudioOut*, AudioOutBuffer*)
+    static uint64_t appended = 0;
+    if (appended++ % 500 == 0)
+        log("audio: AudioOut buffer %llu appended (%llu bytes)", (unsigned long long)appended,
+            (unsigned long long)ld<uint64_t>(c.x[1] + 16));
     std::lock_guard lk(g_out.lock);
+    g_out_appended++;
     g_out.queued.push_back(c.x[1]);
     g_out.cv.notify_all();
     c.x[0] = 1;  // bool: appended
@@ -189,12 +214,14 @@ void AppendAudioOutBuffer(CPU& c) {  // (AudioOut*, AudioOutBuffer*)
 
 void GetReleasedAudioOutBuffer(CPU& c) {
     std::lock_guard lk(g_out.lock);
+    g_out_polls++;
     if (g_out.released.empty()) {
         c.x[0] = 0;
         return;
     }
     c.x[0] = g_out.released.front();
     g_out.released.pop_front();
+    g_out_taken++;
     if (g_out.released.empty()) g_out.event->signaled = false;
 }
 

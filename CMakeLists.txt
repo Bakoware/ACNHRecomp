@@ -241,11 +241,19 @@ if("subsdk0" IN_LIST NX_MODULES)
     target_compile_definitions(${NX_GAME} PRIVATE NX_HAS_SUBSDK0)
 endif()
 
-# libvpx decodes VP8/VP9 movies (runtime/src/hle_movie.cpp; ACNH's opening movie). From the system: apt install
-# libvpx-dev, brew install libvpx. Without it the movies play with black frames.
+# libvpx and libvorbis decode VP8/VP9 + Vorbis movies (runtime/src/hle_movie.cpp; ACNH's opening movie). From the
+# system: apt install libvpx-dev libvorbis-dev, brew install libvpx libvorbis. Without libvpx the movies play with
+# black frames; without libvorbis the SDK's own Vorbis decoder is used.
 find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND AND NOT ANDROID)
     pkg_check_modules(VPX QUIET IMPORTED_TARGET vpx)
+    pkg_check_modules(VORBIS QUIET IMPORTED_TARGET vorbis)
+endif()
+if(VORBIS_FOUND)
+    target_link_libraries(${NX_GAME} PRIVATE PkgConfig::VORBIS)
+else()
+    message(STATUS "libvorbis not found: movies use the SDK's Vorbis decoder")
+    target_compile_definitions(${NX_GAME} PRIVATE NX_NO_VORBIS)
 endif()
 if(VPX_FOUND)
     target_link_libraries(${NX_GAME} PRIVATE PkgConfig::VPX)

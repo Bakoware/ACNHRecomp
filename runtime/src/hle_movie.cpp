@@ -1,4 +1,5 @@
-// movie::Decoder (NintendoSDK_movie, subsdk0) for VP8/VP9 video, decoded on the CPU with libvpx.
+// movie::Decoder (NintendoSDK_movie, subsdk0) for VP8/VP9 video and Vorbis audio, decoded on the CPU with libvpx
+// and libvorbis.
 // First needed by Animal Crossing: New Horizons: the opening movie (Movie/OpeningMovie.webm, VP9 1080p + Vorbis).
 // The SDK's decoder is Android's stagefright on the console's NVDEC block (NvMM/OMX): it opens the nvhost driver
 // and aborts in process. The game demuxes with movie::Extractor (software, it runs recompiled) and drives the
@@ -7,13 +8,19 @@
 //
 // main creates the decoder with `new movie::Decoder(type, output format, mode, priority)` and calls everything
 // else through its vtable, so the constructor is replaced: for video types the object gets a vtable of our own whose
-// slots are HLE thunks (the slot order is movie::Decoder's, read from _ZTVN5movie7DecoderE). Audio decoders
-// (Vorbis, software in the SDK) keep the SDK's implementation.
+// slots are HLE thunks (the slot order is movie::Decoder's, read from _ZTVN5movie7DecoderE). The SDK's Vorbis
+// decoder is software (OMX.google on ALooper threads) but stalled after its first buffers here, and the demuxer
+// then starved the video too, so Vorbis is replaced as well. Other types (AVC, AAC) keep the SDK's implementation.
 //
-// Output format 4 is NV12, tightly packed (a width x height luma plane, then interleaved chroma at half
+// Video output (format 4) is NV12, tightly packed (a width x height luma plane, then interleaved chroma at half
 // resolution), copied into the buffer the game passes to GetOutputBuffer, as DecoderImpl::ConvertDecoderOutputFormat
-// does. Without libvpx (NX_NO_VPX) frames are black and the movie still plays to its end.
+// does. Audio output (format 1) is interleaved s16 PCM. Vorbis headers come as Android's csd-0 (identification)
+// and csd-1 (setup) buffers in the track format. Without libvpx (NX_NO_VPX) frames are black; without libvorbis
+// (NX_NO_VORBIS) the SDK's own Vorbis decoder is used.
 #include <algorithm>
+#include <chrono>
+#include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <initializer_list>
@@ -26,6 +33,9 @@
 #if !defined(NX_NO_VPX)
 #include <vpx/vp8dx.h>
 #include <vpx/vpx_decoder.h>
+#endif
+#if !defined(NX_NO_VORBIS)
+#include <vorbis/codec.h>
 #endif
 
 #include <nx/runtime.h>
@@ -43,13 +53,16 @@ using nvn::guest_call;
 constexpr const char* kCtor = "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi";
 constexpr uint32_t kOk = 0, kInvalid = 0x100b, kNoBuffer = 0x1011;
 constexpr uint32_t kFlagEos = 4;          // BufferFlag_EndOfStream (what main passes when the extractor runs out)
-constexpr int kInputs = 4, kOutputs = 4;  // buffers in flight, as a hardware decoder would have
+// Buffers in flight. The game demuxes in file order and feeds whichever decoder the next sample is for; with 4
+// video outputs (133 ms) the video renderer, paced by the audio clock, held them all before the next audio block
+// was reached, and the movie deadlocked at random. NVDEC has about this many surfaces.
+constexpr int kInputs = 8, kOutputs = 16;
 constexpr uint64_t kInputCapacity = 4ull << 20;
 
 enum Type { kAvc = 1, kVp8 = 2, kVp9 = 3, kAac = 4, kVorbis = 5 };
 
 struct Frame {
-    std::vector<uint8_t> nv12;
+    std::vector<uint8_t> data;  // NV12 picture or s16 PCM
     int64_t pts = 0;
     uint32_t flags = 0;
     bool acquired = false;
@@ -60,17 +73,31 @@ struct Decoder {
     std::mutex lock;
     int type = 0, out_format = 0;
     int width = 0, height = 0;
-    uint64_t events[4] = {};  // input available, output available, format changed, error (os::EventType*)
+    int channels = 0, rate = 0;  // audio
+    // movie::DecoderEvents*: {input available, output available, format changed, error} (os::EventType*). Read when
+    // signalling, as DecoderImpl does: the game registers the struct before it fills it.
+    uint64_t events = 0;
     uint64_t inputs[kInputs] = {};
     std::deque<int> free_inputs, held_inputs;  // held: decoded, waiting for an output slot to give them back
     std::deque<Frame> outputs;
     int next_out = 0;
     bool started = false, format_sent = false;
     uint64_t frames = 0;
+    uint64_t sent = 0, acquired = 0, copied = 0, released = 0;  // logged every 300 frames copied
+    uint64_t last_dst = 0, last_cap = 0;
 #if !defined(NX_NO_VPX)
     vpx_codec_ctx_t vpx{};
     bool vpx_ok = false;
 #endif
+#if !defined(NX_NO_VORBIS)
+    vorbis_info vi{};
+    vorbis_comment vc{};
+    vorbis_dsp_state vd{};
+    vorbis_block vb{};
+    bool vorbis_ok = false;
+    int64_t packetno = 0;
+#endif
+    bool audio() const { return type == kVorbis; }
 };
 
 std::mutex g_lock;
@@ -82,6 +109,10 @@ Decoder* of(uint64_t self) {
     std::lock_guard lk(g_lock);
     auto it = g_decoders.find(self);
     return it == g_decoders.end() ? nullptr : it->second.get();
+}
+
+uint64_t plat_now_ns() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 uint64_t sym(const char* name) {
@@ -106,9 +137,30 @@ uint64_t key(const char* k) {
     return a;
 }
 
+// NX_MOVIE_STATS=1: every 2 s, each decoder's buffers.
+void stats() {
+    static const bool on = std::getenv("NX_MOVIE_STATS") != nullptr;
+    static std::atomic<uint64_t> next{0};
+    uint64_t now = plat_now_ns();
+    if (!on || now < next) return;
+    next = now + 2'000'000'000ull;
+    std::lock_guard lk(g_lock);
+    for (auto& [self, d] : g_decoders) {
+        size_t unacquired = std::count_if(d->outputs.begin(), d->outputs.end(), [](const Frame& f) { return !f.acquired; });
+        log("movie: %s: %llu sent, %llu decoded, %llu acquired, %llu copied, %llu released; outputs %zu (%zu not acquired), "
+            "inputs %zu free %zu held", d->audio() ? "audio" : "video", (unsigned long long)d->sent,
+            (unsigned long long)d->frames, (unsigned long long)d->acquired, (unsigned long long)d->copied,
+            (unsigned long long)d->released, d->outputs.size(), unacquired, d->free_inputs.size(), d->held_inputs.size());
+    }
+}
+
 void signal(CPU& c, Decoder& d, int which) {
+    stats();
     static const uint64_t fn = sym("_ZN2nn2os11SignalEventEPNS0_9EventTypeE");
-    if (d.events[which]) guest_call(c, fn, {d.events[which]});
+    uint64_t ev = d.events ? ld<uint64_t>(d.events + 8 * which) : 0;
+    static const bool trace = std::getenv("NX_MOVIE_TRACE") != nullptr;
+    if (trace) log("movie: %s signal %d (event %llx)", d.audio() ? "audio" : "video", which, (unsigned long long)ev);
+    if (ev) guest_call(c, fn, {ev});
 }
 
 // ---- decoding ----------------------------------------------------------------------------------------------------
@@ -128,14 +180,42 @@ void open_codec(Decoder& d) {
 
 // One compressed frame in, zero or more NV12 frames out (appended to d.outputs).
 void decode(Decoder& d, const uint8_t* data, size_t size, int64_t pts, uint32_t flags) {
-    auto push = [&](std::vector<uint8_t>&& nv12, uint32_t fl) {
+    auto push = [&](std::vector<uint8_t>&& bytes, uint32_t fl) {
         Frame f;
-        f.nv12 = std::move(nv12);
+        f.data = std::move(bytes);
         f.pts = pts;
         f.flags = fl;
         f.index = d.next_out++ % 1024;
         d.outputs.push_back(std::move(f));
     };
+#if !defined(NX_NO_VORBIS)
+    if (d.audio()) {
+        if (d.vorbis_ok && size) {
+            ogg_packet op{};
+            op.packet = const_cast<unsigned char*>(data);
+            op.bytes = long(size);
+            op.granulepos = -1;
+            op.packetno = d.packetno++;
+            if (vorbis_synthesis(&d.vb, &op) == 0 && vorbis_synthesis_blockin(&d.vd, &d.vb) == 0) {
+                float** pcm;
+                int n;
+                std::vector<uint8_t> out;
+                while ((n = vorbis_synthesis_pcmout(&d.vd, &pcm)) > 0) {
+                    size_t at = out.size();
+                    out.resize(at + size_t(n) * d.channels * 2);
+                    int16_t* o = reinterpret_cast<int16_t*>(out.data() + at);
+                    for (int i = 0; i < n; i++)
+                        for (int ch = 0; ch < d.channels; ch++)
+                            *o++ = int16_t(std::clamp(pcm[ch][i] * 32767.0f, -32768.0f, 32767.0f));
+                    vorbis_synthesis_read(&d.vd, n);
+                }
+                if (!out.empty()) push(std::move(out), 0), d.frames++;
+            }
+        }
+        if (flags & kFlagEos) push({}, kFlagEos);
+        return;
+    }
+#endif
 #if !defined(NX_NO_VPX)
     if (d.vpx_ok && size) {
         if (vpx_codec_decode(&d.vpx, data, unsigned(size), nullptr, 0) != VPX_CODEC_OK) {
@@ -188,6 +268,13 @@ void Destroy(CPU& c) {  // ~Decoder() (complete)
 #if !defined(NX_NO_VPX)
     if (d && d->vpx_ok) vpx_codec_destroy(&d->vpx);
 #endif
+#if !defined(NX_NO_VORBIS)
+    if (d && d->vorbis_ok) {
+        vorbis_block_clear(&d->vb);
+        vorbis_dsp_clear(&d->vd);
+    }
+    if (d && d->audio()) vorbis_comment_clear(&d->vc), vorbis_info_clear(&d->vi);
+#endif
     // The input buffers stay allocated: kernel memory is not given back (a few MiB per movie played).
     st<uint64_t>(self, 0);
 }
@@ -198,9 +285,54 @@ void DestroyDelete(CPU& c) {  // ~Decoder() (deleting)
     if (uint64_t del = find_symbol("_ZdlPv")) guest_call(c, del, {self});
 }
 
+// The bytes of a MediaData buffer entry ("csd-0", ...): empty when there is none.
+std::vector<uint8_t> find_buffer(CPU& c, uint64_t md, const char* k) {
+    static const uint64_t find = sym("_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE");
+    static const uint64_t data = sym("_ZNK5movie6Buffer4DataEv");
+    static const uint64_t size = sym("_ZNK5movie6Buffer4SizeEv");
+    uint64_t out = nvn::scratch(c, 16);
+    st<uint64_t>(out, 0);
+    if (!md || !(guest_call(c, find, {md, key(k), out}) & 1)) return {};
+    uint64_t buf = ld<uint64_t>(out);
+    if (!buf) return {};
+    uint64_t p = guest_call(c, data, {buf}), n = uint32_t(guest_call(c, size, {buf}));
+    if (!p || n > (1u << 20)) return {};
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(p);
+    return std::vector<uint8_t>(b, b + n);
+}
+
+// Vorbis: the identification and setup headers from csd-0/csd-1, with an empty comment header between them (the
+// decoder needs all three in order; Android's MediaCodec gets only two).
+void ConfigureAudio(CPU& c, Decoder& d) {
+    std::vector<uint8_t> ident = find_buffer(c, c.x[1], "csd-0"), setup = find_buffer(c, c.x[1], "csd-1");
+    std::lock_guard lk(d.lock);
+#if !defined(NX_NO_VORBIS)
+    vorbis_info_init(&d.vi);
+    vorbis_comment_init(&d.vc);
+    static const uint8_t comment[] = {3, 'v', 'o', 'r', 'b', 'i', 's', 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    auto header = [&](std::vector<uint8_t> bytes, int no) {
+        ogg_packet op{};
+        op.packet = bytes.data();
+        op.bytes = long(bytes.size());
+        op.b_o_s = no == 0;
+        op.packetno = no;
+        return !bytes.empty() && vorbis_synthesis_headerin(&d.vi, &d.vc, &op) == 0;
+    };
+    bool ok = header(ident, 0) && header(std::vector<uint8_t>(comment, comment + sizeof comment), 1) && header(setup, 2);
+    if (ok) ok = vorbis_synthesis_init(&d.vd, &d.vi) == 0 && vorbis_block_init(&d.vd, &d.vb) == 0;
+    d.vorbis_ok = ok;
+    d.channels = d.vi.channels, d.rate = int(d.vi.rate);
+    d.packetno = 3;
+    log("movie: Vorbis decoder %s (%d channels, %d Hz; headers %zu + %zu bytes)", ok ? "ready" : "failed", d.channels,
+        d.rate, ident.size(), setup.size());
+#endif
+    c.x[0] = kOk;
+}
+
 void Configure(CPU& c) {  // Status (MediaData* format)
     Decoder* d = of(c.x[0]);
     if (!d) return void(c.x[0] = kInvalid);
+    if (d->audio()) return ConfigureAudio(c, *d);
     uint64_t out = nvn::scratch(c, 16);
     static const uint64_t find = sym("_ZNK5movie9MediaData9FindInt32EPKcPi");
     int w = 0, h = 0;
@@ -219,7 +351,7 @@ void RegisterClientEvents(CPU& c) {  // Status (DecoderEvents*)
     Decoder* d = of(c.x[0]);
     if (!d || !c.x[1]) return void(c.x[0] = kInvalid);
     std::lock_guard lk(d->lock);
-    for (int k = 0; k < 4; k++) d->events[k] = ld<uint64_t>(c.x[1] + 8 * k);
+    d->events = c.x[1];
     c.x[0] = kOk;
 }
 
@@ -235,6 +367,12 @@ void GetOutputFormat(CPU& c) {  // Status (MediaData* out)
         w = d->width, h = d->height;
     }
     uint64_t md = c.x[1];
+    if (d->audio()) {
+        guest_call(c, setstr, {md, key("mime"), key("audio/raw")});
+        guest_call(c, set32, {md, key("channel-count"), uint64_t(d->channels)});
+        guest_call(c, set32, {md, key("sample-rate"), uint64_t(d->rate)});
+        return void(c.x[0] = kOk);
+    }
     guest_call(c, setstr, {md, key("mime"), key(d->type == kVp8 ? "video/x-vnd.on2.vp8" : "video/x-vnd.on2.vp9")});
     guest_call(c, set32, {md, key("width"), uint64_t(w)});
     guest_call(c, set32, {md, key("height"), uint64_t(h)});
@@ -321,8 +459,11 @@ void SendInputBufferForDecode(CPU& c) {
         std::lock_guard lk(d->lock);
         size_t before = d->outputs.size();
         decode(*d, reinterpret_cast<const uint8_t*>(d->inputs[index] + offset), size_t(size), pts, flags);
+        if (d->sent++ % 300 == 0)
+            log("movie: input %llu: %d bytes at %lld us, flags %#x; %llu frames decoded, %zu outputs waiting",
+                (unsigned long long)d->sent, size, (long long)pts, flags, (unsigned long long)d->frames, d->outputs.size());
         output = d->outputs.size() > before;
-        if (output && !d->format_sent && d->width) d->format_sent = format_changed = true;
+        if (output && !d->format_sent && (d->width || d->channels)) d->format_sent = format_changed = true;
         if (d->outputs.size() < kOutputs)
             d->free_inputs.push_back(index), input_back = true;
         else
@@ -346,6 +487,7 @@ void AcquireOutputBufferIndex(CPU& c) {
     auto it = std::find_if(d->outputs.begin(), d->outputs.end(), [](const Frame& f) { return !f.acquired; });
     if (it == d->outputs.end()) return void(c.x[0] = kNoBuffer);
     it->acquired = true;
+    d->acquired++;
     st<int32_t>(c.x[1], it->index);
     st<int64_t>(c.x[2], it->pts);
     st<uint32_t>(c.x[3], it->flags);
@@ -366,10 +508,16 @@ void GetOutputBuffer(CPU& c) {  // Status (int index, Buffer* out): the frame co
         std::lock_guard lk(d->lock);
         auto it = std::find_if(d->outputs.begin(), d->outputs.end(), [&](const Frame& f) { return f.index == int(c.x[1]); });
         if (it == d->outputs.end()) return void(c.x[0] = kInvalid);
-        n = std::min<size_t>(it->nv12.size(), cap);
-        if (n && dst) std::memcpy(reinterpret_cast<void*>(dst), it->nv12.data(), n);
+        n = std::min<size_t>(it->data.size(), cap);
+        if (n && dst) std::memcpy(reinterpret_cast<void*>(dst), it->data.data(), n);
+        if (d->copied++ % 300 == 0)
+            log("movie: frame %llu at %lld us -> buffer %llx (capacity %llu, %zu of %zu bytes); %llu sent, %llu decoded, "
+                "%llu acquired, %llu released", (unsigned long long)d->copied, (long long)it->pts,
+                (unsigned long long)dst, (unsigned long long)cap, n, it->data.size(), (unsigned long long)d->sent,
+                (unsigned long long)d->frames, (unsigned long long)d->acquired, (unsigned long long)d->released);
     }
     guest_call(c, set_range, {buf, 0, n});
+    if (n && dst && !d->audio()) textures_written(dst, n);
     c.x[0] = kOk;
 }
 
@@ -380,7 +528,7 @@ void ReleaseOutputBufferIndex(CPU& c) {  // Status (int index)
     {
         std::lock_guard lk(d->lock);
         auto it = std::find_if(d->outputs.begin(), d->outputs.end(), [&](const Frame& f) { return f.index == int(c.x[1]); });
-        if (it != d->outputs.end()) d->outputs.erase(it);
+        if (it != d->outputs.end()) d->outputs.erase(it), d->released++;
         while (!d->held_inputs.empty() && d->outputs.size() < kOutputs) {
             d->free_inputs.push_back(d->held_inputs.front());
             d->held_inputs.pop_front();
@@ -395,7 +543,7 @@ void GetOutputBufferSize(CPU& c) {  // Status (int* size, int* count)
     Decoder* d = of(c.x[0]);
     if (!d || !c.x[1] || !c.x[2]) return void(c.x[0] = kInvalid);
     std::lock_guard lk(d->lock);
-    st<int32_t>(c.x[1], d->width * d->height * 3 / 2);
+    st<int32_t>(c.x[1], d->audio() ? 0x2000 * std::max(d->channels, 1) : d->width * d->height * 3 / 2);
     st<int32_t>(c.x[2], 1);
     c.x[0] = kOk;
 }
@@ -416,31 +564,45 @@ void GetOutputBufferFormat(CPU& c) {  // Status (int index, MediaData*)
     GetOutputFormat(c);
 }
 
+// NX_MOVIE_TRACE=1: every call of every slot (else the first of each).
+template <HleFn F>
+void traced(CPU& c) {
+    static const bool all = std::getenv("NX_MOVIE_TRACE") != nullptr;
+    static std::atomic<int> n{0};
+    uint64_t a1 = c.x[1], a2 = c.x[2];
+    Decoder* d = of(c.x[0]);
+    const char* who = !d ? "?" : d->audio() ? "audio" : "video";
+    if (all || n++ == 0)
+        log("movie: %s %s(%llx, %llx)", who, hle_current_name(), (unsigned long long)a1, (unsigned long long)a2);
+    F(c);
+    if (all) log("movie:   %s -> %llx", who, (unsigned long long)c.x[0]);
+}
+
 // The slots after the address point, in movie::Decoder's order.
 struct Slot {
     const char* name;
     HleFn fn;
 };
 constexpr Slot kSlots[] = {
-    {"movie::Decoder::~Decoder", Destroy},
-    {"movie::Decoder::~Decoder(deleting)", DestroyDelete},
-    {"movie::Decoder::Configure", Configure},
-    {"movie::Decoder::RegisterClientEvents", RegisterClientEvents},
-    {"movie::Decoder::GetOutputFormat", GetOutputFormat},
-    {"movie::Decoder::Start", Start},
-    {"movie::Decoder::Stop", Stop},
-    {"movie::Decoder::Reset", Flush},
-    {"movie::Decoder::Flush", Flush},
-    {"movie::Decoder::AcquireInputBufferIndex", AcquireInputBufferIndex},
-    {"movie::Decoder::GetInputBuffer", GetInputBuffer},
-    {"movie::Decoder::SendInputBufferForDecode", SendInputBufferForDecode},
-    {"movie::Decoder::AcquireOutputBufferIndex", AcquireOutputBufferIndex},
-    {"movie::Decoder::GetOutputBuffer", GetOutputBuffer},
-    {"movie::Decoder::GetOutputBufferSize", GetOutputBufferSize},
-    {"movie::Decoder::ReleaseOutputBufferIndex", ReleaseOutputBufferIndex},
-    {"movie::Decoder::GetLastError", GetLastError},
-    {"movie::Decoder::GetOutputBuffer(format)", GetOutputBufferWithFormat},
-    {"movie::Decoder::GetOutputBufferFormat", GetOutputBufferFormat},
+    {"movie::Decoder::~Decoder", traced<Destroy>},
+    {"movie::Decoder::~Decoder(deleting)", traced<DestroyDelete>},
+    {"movie::Decoder::Configure", traced<Configure>},
+    {"movie::Decoder::RegisterClientEvents", traced<RegisterClientEvents>},
+    {"movie::Decoder::GetOutputFormat", traced<GetOutputFormat>},
+    {"movie::Decoder::Start", traced<Start>},
+    {"movie::Decoder::Stop", traced<Stop>},
+    {"movie::Decoder::Reset", traced<Flush>},
+    {"movie::Decoder::Flush", traced<Flush>},
+    {"movie::Decoder::AcquireInputBufferIndex", traced<AcquireInputBufferIndex>},
+    {"movie::Decoder::GetInputBuffer", traced<GetInputBuffer>},
+    {"movie::Decoder::SendInputBufferForDecode", traced<SendInputBufferForDecode>},
+    {"movie::Decoder::AcquireOutputBufferIndex", traced<AcquireOutputBufferIndex>},
+    {"movie::Decoder::GetOutputBuffer", traced<GetOutputBuffer>},
+    {"movie::Decoder::GetOutputBufferSize", traced<GetOutputBufferSize>},
+    {"movie::Decoder::ReleaseOutputBufferIndex", traced<ReleaseOutputBufferIndex>},
+    {"movie::Decoder::GetLastError", traced<GetLastError>},
+    {"movie::Decoder::GetOutputBuffer(format)", traced<GetOutputBufferWithFormat>},
+    {"movie::Decoder::GetOutputBufferFormat", traced<GetOutputBufferFormat>},
 };
 
 uint64_t vtable() {
@@ -460,14 +622,20 @@ uint64_t vtable() {
 void Construct(CPU& c) {
     uint64_t self = c.x[0];
     int type = int(c.x[1]), format = int(c.x[2]);
-    if (type != kVp8 && type != kVp9) {
+#if !defined(NX_NO_VORBIS)
+    const bool ours = type == kVp8 || type == kVp9 || type == kVorbis;
+#else
+    const bool ours = type == kVp8 || type == kVp9;
+#endif
+    if (!ours) {
         static const uint64_t real = sym(kCtor);
         call(c, real);
         return;
     }
     auto d = std::make_unique<Decoder>();
     d->type = type, d->out_format = format;
-    if (format != 4) log("movie: video output format %d asked; NV12 (4) given", format);
+    if (type != kVorbis && format != 4) log("movie: video output format %d asked; NV12 (4) given", format);
+    if (type == kVorbis && format != 1) log("movie: audio output format %d asked; PCM16 (1) given", format);
     st<uint64_t>(self, vtable());
     st<uint64_t>(self + 8, 0);
     std::lock_guard lk(g_lock);

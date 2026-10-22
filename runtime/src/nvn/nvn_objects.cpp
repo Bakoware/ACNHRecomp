@@ -703,3 +703,43 @@ NX_HLE("nvnDeviceGetTexelFetchHandle", DeviceGetTexelFetchHandle);
 NX_HLE("nvnDeviceGetImageHandle", DeviceGetImageHandle);
 
 }  // namespace nx::nvn
+
+namespace nx {
+
+// Something outside the GPU wrote guest memory [addr, addr + size) that textures may sample (a movie decoder's frame,
+// which the console's NVDEC writes without a flush from the game): those textures are uploaded again.
+void textures_written(uint64_t addr, uint64_t size) {
+    using namespace nx::nvn;
+    std::lock_guard lk(objects_lock());
+    int found = 0, imaged = 0;
+    for (auto& [pool, guests] : pool_textures())
+        for (uint64_t guest : guests) {
+            auto o = objects().find(guest);
+            auto* t = o == objects().end() ? nullptr : dynamic_cast<Texture*>(o->second.get());
+            if (!t || !t->memory || t->memory >= addr + size || t->memory + t->storage_size <= addr) continue;
+            found++;
+            if (!t->image) continue;
+            imaged++;
+            uint64_t base = std::max(addr, t->memory), end = std::min(addr + size, t->memory + t->storage_size);
+            t->mark_dirty(base - t->memory, end - t->memory);
+        }
+    static int logged = 0;
+    if (logged++ < 4) {
+        log("nvn: %llx+%llx written behind the GPU: %d textures over it, %d with an image", (unsigned long long)addr,
+            (unsigned long long)size, found, imaged);
+        if (!found)
+            for (auto& [pool, guests] : pool_textures())
+                for (uint64_t guest : guests) {
+                    auto o = objects().find(guest);
+                    auto* t = o == objects().end() ? nullptr : dynamic_cast<Texture*>(o->second.get());
+                    if (t && (t->storage_size == size * 2 / 3 || t->storage_size == size / 3 ||
+                              (t->width == 1920 && t->height == 1080 && t->format < 0x10)))
+                        log("nvn:   texture %llx %ux%u fmt %#x stride %u: pool %llx +%llx memory %llx size %llx image %d",
+                            (unsigned long long)guest, t->width, t->height, t->format, t->stride,
+                            (unsigned long long)pool, (unsigned long long)t->offset, (unsigned long long)t->memory,
+                            (unsigned long long)t->storage_size, t->image ? 1 : 0);
+                }
+    }
+}
+
+}  // namespace nx

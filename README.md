@@ -95,11 +95,11 @@ Ubuntu/Debian, uma vez:
 
 ```sh
 sudo apt install build-essential clang lld cmake ninja-build patch curl python3-venv spirv-tools pkg-config \
-     libvulkan-dev libsdl3-dev libvpx-dev mesa-vulkan-drivers vulkan-tools
+     libvulkan-dev libsdl3-dev libvpx-dev libvorbis-dev mesa-vulkan-drivers vulkan-tools
 ```
 
-macOS: `brew install llvm cmake ninja sdl3 molten-vk vulkan-loader libvpx`. A `libvpx` decodifica o filme de
-abertura (VP9); sem ela o jogo roda e o filme aparece preto.
+macOS: `brew install llvm cmake ninja sdl3 molten-vk vulkan-loader libvpx libvorbis`. `libvpx` e `libvorbis` decodificam o filme de
+abertura (VP9 + Vorbis); sem elas o jogo roda e o filme aparece preto.
 
 ## Instalação
 
