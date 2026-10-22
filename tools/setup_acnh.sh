@@ -4,6 +4,8 @@
 #
 #   usage: tools/setup_acnh.sh --keys <prod.keys> [--title-keys <title.keys>] --base <base.nsp> --update <update.nsp>
 #                              [--dlc <add-on.nsp>]...   (add-on content: imported to private/acnh/aoc/<index>/)
+#                              [--mod <name>=<zip>]...   (a RomFS mod, e.g. --mod ptbr=acnh_ptbr_beta4.zip: the pt-BR
+#                                                         fan translation; private/acnh/mods/<name>/romfs/)
 #          tools/setup_acnh.sh                       (later runs: the import is done, the rest is checked)
 #   env:   JOBS=<compile jobs> (default: RAM in GB / 3, at most the core count)   FORCE=<stage> to redo one stage
 #
@@ -17,7 +19,7 @@ T=$P/third_party
 G=$P/acnh
 mkdir -p "$P" "$T" "$G/logs"
 
-KEYS="" TKEYS="" BASE="" UPD="" DLC=()
+KEYS="" TKEYS="" BASE="" UPD="" DLC=() MODS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --keys) KEYS=$2; shift 2 ;;
@@ -25,6 +27,7 @@ while [ $# -gt 0 ]; do
     --base) BASE=$2; shift 2 ;;
     --update) UPD=$2; shift 2 ;;
     --dlc) DLC+=("$2"); shift 2 ;;
+    --mod) MODS+=("$2"); shift 2 ;;
     *) echo "unknown argument $1"; exit 1 ;;
   esac
 done
@@ -68,6 +71,10 @@ if [ ! -f "$T/ryubing/Ryujinx.sln" ]; then
   mkdir -p "$T/ryubing"
   curl -sL https://codeberg.org/Software_arch/Ryubing/archive/a82350bb77.tar.gz | tar -xz -C "$T/ryubing" --strip-components=1
 fi
+if [ ! -f "$T/imgui/imgui.cpp" ]; then  # the settings screen (Dear ImGui, MIT)
+  mkdir -p "$T/imgui"
+  curl -sL https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9.tar.gz | tar -xz -C "$T/imgui" --strip-components=1
+fi
 HARNESS=$P/build/spirv_harness/bin/Release/net10.0/spirv_harness.dll
 if [ ! -f "$HARNESS" ] || force harness; then
   dotnet build tools/maxwell/spirv_harness/SpirvHarness.csproj -c Release -m:4 > "$G/logs/harness.log" 2>&1 ||
@@ -106,6 +113,33 @@ import struct, sys
 d = open(sys.argv[1], "rb").read()
 print("main.bin", len(d), "bytes")' "$G/analysis/main.bin"
 
+# ---- mods: a zip with romfs/ at its root (or one folder holding it), extracted to private/acnh/mods/<name>/ -------
+for m in ${MODS[@]+"${MODS[@]}"}; do
+  name=${m%%=*}; zip=${m#*=}
+  [ "$name" != "$m" ] && [ -f "$zip" ] || { echo "--mod wants <name>=<zip>"; exit 1; }
+  say "mod $name ($zip)"
+  "$PY" -I - "$zip" "$G/mods/$name" <<'PYEOF'
+import sys, zipfile, os, shutil
+src, dst = sys.argv[1], sys.argv[2]
+z = zipfile.ZipFile(src)
+names = [i.filename for i in z.infolist()]
+for n in names:
+    if n.startswith('/') or '..' in n.split('/'): sys.exit(f'unsafe path in the zip: {n}')
+prefix = ''
+if not any(n.startswith('romfs/') for n in names):  # one wrapping folder
+    tops = {n.split('/')[0] for n in names if '/romfs/' in n}
+    if len(tops) != 1: sys.exit('no romfs/ folder in the zip')
+    prefix = tops.pop() + '/'
+shutil.rmtree(dst, ignore_errors=True)
+for i in z.infolist():
+    if i.is_dir() or not i.filename.startswith(prefix + 'romfs/'): continue
+    out = os.path.join(dst, i.filename[len(prefix):])
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with z.open(i) as a, open(out, 'wb') as b: shutil.copyfileobj(a, b)
+print(f'{sum(1 for _ in os.scandir(dst))} entries in {dst}')
+PYEOF
+done
+
 # ---- recompile ------------------------------------------------------------------------------------------------
 say "recompile (main, sdk, subsdk0)"
 recomp() {  # module base
@@ -137,6 +171,12 @@ if [ ! -f "$G/fonts/shared_5.ttf" ]; then
            /usr/share/fonts/TTF/DejaVuSans.ttf /usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf; do
     [ -f "$f" ] && { "$PY" tools/fonts/make_button_font.py --base "$f" --out "$G/fonts/shared_5.ttf" >/dev/null; break; }
   done
+fi
+# ACNH draws its button prompts with its own ParkExt font (Font/ScalableFont.sarc.zs), not with type 5: a copy of
+# that archive per controller style (Xbox, PlayStation) and face-button layout, chosen at boot by controls.glyphs
+# (runtime/src/glyphs.cpp). About 13 MB each.
+if [ ! -f "$G/fonts/glyphs_xbox/nintendo/romfs/Font/ScalableFont.sarc.zs" ] || force glyphs; then
+  "$PY" tools/make_button_glyphs.py --romfs "$G/extract/romfs" --out "$G/fonts" > "$G/logs/glyphs.log"
 fi
 
 # ---- build ----------------------------------------------------------------------------------------------------

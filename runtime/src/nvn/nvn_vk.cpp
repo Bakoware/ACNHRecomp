@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "nvn_vk.h"
+#include "ui/ui.h"
 #include "platform.h"
 
 #include <nx/game.h>
@@ -252,6 +253,9 @@ bool init() {
     dci.pNext = &features;
     if (!check(p_create_device(g_physical, &dci, nullptr, &g_device), "vkCreateDevice")) return false;
     p_vkGetDeviceQueue(g_device, g_family, 0, &g_queue);
+    if (!plat::headless() || std::getenv("NX_UI_OPEN"))  // the settings screen (ui/ui.cpp)
+        ui::ui_vulkan_ready(reinterpret_cast<PFN_vkGetInstanceProcAddr>(g_gipa), g_instance, g_physical, g_device, g_family,
+                            g_queue);
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -326,6 +330,7 @@ bool make_surface() {
 }
 
 bool make_swapchain() {
+    ui::ui_swapchain_changed();
     if (g_swapchain) {
         if (async_gpu()) frame_wait_all();
         p_vkDeviceWaitIdle(g_device);
@@ -659,6 +664,12 @@ void present_headless(uint64_t texture) {
         GpuImage* shown = src;  // NX_PRESENT_TEST: what the present pass would put on a display (nvn_present.cpp)
         if (GpuImage* test = present_pass_test_target(); test && present_pass_record(g_cb, *src, nullptr, 0))
             test->layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, shown = test;
+        // NX_UI_OPEN=1 headless: the settings screen drawn over the dumped frame (to test it without a display).
+        static const bool ui_test = std::getenv("NX_UI_OPEN") != nullptr;
+        if (ui_test && due) {
+            transition(g_cb, *shown, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            ui::ui_record(g_cb, shown->image, shown->format, VkExtent2D{shown->width, shown->height});
+        }
         transition(g_cb, *shown, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         bool dump = due && frame_dump_record(g_cb, *shown);
         if (async_gpu())
@@ -689,6 +700,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         if (async_gpu()) frame_wait_all();
         p_vkDeviceWaitIdle(g_device);
         present_pass_release();
+        ui::ui_swapchain_changed();
         if (g_swapchain) p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
         log("nvn/vk: new window: surface and swapchain re-made");
@@ -731,6 +743,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     }
     if (!drawn) transition(g_cb, dst, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    ui::ui_record(g_cb, dst.image, g_sc_format, g_sc_extent);  // the settings screen over the picture, when open
     static uint64_t presents = 0;
     presents++;
     if (presents % (presents < 300 ? 60 : 300) == 0) draw_log_stats();

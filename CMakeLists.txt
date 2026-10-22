@@ -119,6 +119,8 @@ set(NX_RUNTIME_SOURCES
     runtime/src/hle_bcat.cpp
     runtime/src/hle_movie.cpp
     runtime/src/hle_friends.cpp
+    runtime/src/config.cpp
+    runtime/src/glyphs.cpp
     runtime/src/input_script.cpp
     runtime/src/touch_layout.cpp
     runtime/src/perf_hint.cpp
@@ -237,6 +239,32 @@ else()
         target_link_options(${NX_GAME} PRIVATE /STACK:67108864 /HIGHENTROPYVA:NO /MAP)
     endif()
 endif()
+
+# The settings screen (runtime/src/ui): Dear ImGui, downloaded by tools/setup_acnh.sh into private/third_party/imgui.
+# Without it (or on Windows/Android until their platform layers feed it) the screen is a stub; config.ini still works.
+set(NX_IMGUI_DIR "${CMAKE_SOURCE_DIR}/private/third_party/imgui" CACHE PATH "Dear ImGui sources")
+if(EXISTS "${NX_IMGUI_DIR}/imgui.cpp" AND NOT ANDROID AND NOT WIN32)
+    target_sources(${NX_GAME} PRIVATE runtime/src/ui/ui.cpp runtime/src/ui/settings.cpp runtime/src/ui/i18n.cpp
+        ${NX_IMGUI_DIR}/imgui.cpp ${NX_IMGUI_DIR}/imgui_draw.cpp ${NX_IMGUI_DIR}/imgui_tables.cpp
+        ${NX_IMGUI_DIR}/imgui_widgets.cpp ${NX_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
+    target_include_directories(${NX_GAME} PRIVATE ${NX_IMGUI_DIR})
+    target_compile_definitions(${NX_GAME} PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES NX_HAVE_SDL3)
+else()
+    message(STATUS "Dear ImGui not found in ${NX_IMGUI_DIR}: no settings screen")
+    target_sources(${NX_GAME} PRIVATE runtime/src/ui/ui_stub.cpp)
+endif()
+target_sources(${NX_GAME} PRIVATE runtime/src/saves.cpp)
+find_package(ZLIB QUIET)
+if(ZLIB_FOUND)
+    target_link_libraries(${NX_GAME} PRIVATE ZLIB::ZLIB)
+    target_compile_definitions(${NX_GAME} PRIVATE NX_HAVE_ZLIB)
+endif()
+execute_process(COMMAND git describe --always --dirty WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE NX_GIT_DESCRIBE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT NX_GIT_DESCRIBE)
+    set(NX_GIT_DESCRIBE "dev")
+endif()
+target_compile_definitions(${NX_GAME} PRIVATE NX_VERSION_STRING="0.2-${NX_GIT_DESCRIBE}")
 
 if("subsdk0" IN_LIST NX_MODULES)
     target_compile_definitions(${NX_GAME} PRIVATE NX_HAS_SUBSDK0)

@@ -189,9 +189,46 @@ As demais opções de depuração estão em [docs/upstream/nvn/SWITCHES.md](docs
 | ZL / ZR | Z / C | NookPhone / |
 | + / − | Enter / Esc ou Backspace | |
 | | F11 ou Alt+Enter | tela cheia |
+| − e + juntos | F1 | configurações |
 
-**Saves** ficam em `private/acnh/user/`. **Relógio:** a ilha segue a data e a hora do computador, como no console.
-**Online** (visitas, Nook Link, Dream Suite) não existe: o jogo vê o console sem internet.
+**Tela de configurações:** **F1** no teclado ou **− e + juntos** no controle, a qualquer momento. Tudo o que se
+muda nela vai para `private/acnh/config.ini` (também editável à mão; variáveis `NX_*` definidas na linha de comando
+têm prioridade).
+
+| Página | Opções |
+|---|---|
+| Jogo | idioma do jogo (automático pelo sistema, os 14 idiomas do jogo e **Português (Brasil)**), idioma do menu |
+| Vídeo | janela/tela cheia, tamanho da janela, 1080p/720p, FSR 1 e nitidez, proporção da tela, taxa de quadros, geração de quadros (lsfg-vk), GPU, preparar shaders ao iniciar |
+| Áudio | volume, reverberação de ambiente (desligar economiza ~1 núcleo de CPU), mudo em segundo plano |
+| Controles | botões de confirmar (Nintendo ou Xbox/PlayStation), **ícones dos botões** (automático pelo controle, Switch, Xbox, PlayStation), vibração, zona morta, **teclas do teclado reconfiguráveis** |
+| Saves | abrir a pasta, backup, importar e exportar, saves de emuladores encontrados no computador, restaurar backups |
+
+A tela se adapta ao tamanho da janela (do notebook ao 4K) e vira um layout vertical em telas estreitas. O idioma do
+menu segue o do sistema (inglês, português do Brasil, espanhol, francês, alemão, italiano, holandês, russo, japonês,
+coreano, chinês simplificado e tradicional).
+
+**Português (Brasil):** a tradução de fãs substitui os textos em espanhol (Europa). Ela não vem no repositório (são
+arquivos do jogo modificados); instale o pacote que você tem e escolha "Português (Brasil)" no idioma do jogo (ou
+deixe automático num sistema em português):
+
+```sh
+tools/setup_acnh.sh --mod ptbr=~/Downloads/acnh_ptbr_beta4.zip
+```
+
+Qualquer outro mod de RomFS funciona igual (`--mod <nome>=<zip>`, `game.mods = <nome>` no `config.ini`).
+
+**Saves** ficam em `private/acnh/user/device_save` (um save por "console", como no Switch). A página Saves importa:
+
+- backups do Switch feitos com **JKSV** ou **Checkpoint** (pasta ou `.zip`, inclusive direto do cartão SD montado);
+- saves de emuladores: **Yuzu** e derivados (Suyu, Sudachi, Citron, Eden, Torzu) e **Ryujinx**/Ryubing, inclusive Flatpak;
+- a pasta de outro ACNHRecomp.
+
+Antes de importar, o save atual vai para `private/acnh/user/backups/` (até 10). Depois de importar o jogo precisa ser
+fechado, para não gravar a ilha antiga por cima. A exportação gera uma pasta (ou `.zip`) no formato que JKSV e
+Checkpoint restauram no console.
+
+**Relógio:** a ilha segue a data e a hora do computador, como no console. **Online** (visitas, Nook Link, Dream
+Suite) não existe: o jogo vê o console sem internet.
 
 ## Estrutura do repositório
 

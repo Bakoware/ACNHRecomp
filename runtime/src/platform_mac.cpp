@@ -45,6 +45,8 @@
 #include <nx/runtime.h>
 
 #include "kernel.h"
+#include "config.h"
+#include "ui/ui.h"
 #include "platform.h"
 
 namespace nx {
@@ -270,27 +272,62 @@ float default_render_scale() { return 1.0f; }
 
 // ---- input: first SDL gamepad + keyboard (sampled on the main thread) -----------------------------------------
 
+// Input options from config.ini (the settings screen writes them), re-read when the config changes.
+struct InputOptions {
+    bool xbox_layout = false;  // confirm on the bottom face button (Xbox/PlayStation habit)
+    int deadzone = 7849;       // of 32767
+    bool rumble = true;
+    SDL_Scancode keys[22] = {};  // the order of kKeyNames
+};
+const char* const kKeyNames[22][2] = {
+    {"move_up", "W"},     {"move_down", "S"},  {"move_left", "A"},  {"move_right", "D"},  {"cam_up", "I"},
+    {"cam_down", "K"},    {"cam_left", "J"},   {"cam_right", "L"},  {"a", "Space"},       {"b", "Left Shift"},
+    {"x", "X"},           {"y", "F"},          {"l", "Q"},          {"r", "E"},           {"zl", "Z"},
+    {"zr", "C"},          {"plus", "Return"},  {"minus", "Escape"}, {"dpad_up", "Up"},    {"dpad_down", "Down"},
+    {"dpad_left", "Left"}, {"dpad_right", "Right"},
+};
+const InputOptions& input_options() {
+    static InputOptions o;
+    static uint64_t gen = 0;
+    if (uint64_t g = nx::config_generation(); g != gen) {
+        gen = g;
+        o.xbox_layout = nx::config_get("input.layout", "nintendo") == "xbox";
+        o.deadzone = std::clamp(nx::config_get_int("input.deadzone", 24), 5, 50) * 32767 / 100;
+        o.rumble = nx::config_get_bool("input.rumble", true);
+        for (int k = 0; k < 22; k++) {
+            std::string name = nx::config_get(std::string("input.key.") + kKeyNames[k][0], kKeyNames[k][1]);
+            SDL_Scancode sc = SDL_GetScancodeFromName(name.c_str());
+            o.keys[k] = sc != SDL_SCANCODE_UNKNOWN ? sc : SDL_GetScancodeFromName(kKeyNames[k][1]);
+        }
+    }
+    return o;
+}
+
+SDL_Gamepad* g_gamepad = nullptr;
+
 static void sample_input() {
     PadState p;
-    static SDL_Gamepad* pad = nullptr;
+    const InputOptions& opt = input_options();
+    SDL_Gamepad*& pad = g_gamepad;
     if (!pad) {
         int n = 0;
         SDL_JoystickID* ids = SDL_GetGamepads(&n);
         if (ids && n > 0) pad = SDL_OpenGamepad(ids[0]);
         SDL_free(ids);
+        if (pad) nx::log("input: controller %s", SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "?");
     }
     if (pad && !SDL_GamepadConnected(pad)) {
         SDL_CloseGamepad(pad);
         pad = nullptr;
     }
     if (pad) {
-        // SDL names buttons by position (south/east/...); Nintendo's A is the east button, B the south one.
+        // SDL names buttons by position (south/east/...). Nintendo layout: the game's A is the east button, as on a
+        // Switch controller. Xbox layout: A is the bottom one (confirm where Xbox and PlayStation players expect it).
         struct Map {
             SDL_GamepadButton b;
             uint64_t bit;
         };
         static const Map map[] = {
-            {SDL_GAMEPAD_BUTTON_EAST, kA},           {SDL_GAMEPAD_BUTTON_SOUTH, kB},
             {SDL_GAMEPAD_BUTTON_NORTH, kX},          {SDL_GAMEPAD_BUTTON_WEST, kY},
             {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, kL},  {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, kR},
             {SDL_GAMEPAD_BUTTON_START, kPlus},       {SDL_GAMEPAD_BUTTON_BACK, kMinus},
@@ -300,11 +337,14 @@ static void sample_input() {
         };
         for (const Map& m : map)
             if (SDL_GetGamepadButton(pad, m.b)) p.buttons |= m.bit;
+        bool east = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST), south = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH);
+        if (opt.xbox_layout ? south : east) p.buttons |= kA;
+        if (opt.xbox_layout ? east : south) p.buttons |= kB;
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 12000) p.buttons |= kZL;
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 12000) p.buttons |= kZR;
         auto axis = [&](SDL_GamepadAxis a, bool invert) {
             int v = SDL_GetGamepadAxis(pad, a);
-            if (v > -7849 && v < 7849) return 0;
+            if (v > -opt.deadzone && v < opt.deadzone) return 0;
             v = std::clamp(v, -kStickMax, kStickMax);
             return invert ? -v : v;
         };
@@ -313,35 +353,110 @@ static void sample_input() {
         p.rx = axis(SDL_GAMEPAD_AXIS_RIGHTX, false);
         p.ry = axis(SDL_GAMEPAD_AXIS_RIGHTY, true);
     }
-    // Keyboard (laid out for ACNH): WASD left stick, IJKL right stick (camera), arrows D-pad (tool shortcuts),
-    // Space A, Shift B (run), X X, F Y, Q/E L/R, Z/C ZL/ZR, Enter +, Esc or Backspace -.
+    // Keyboard: the bindings from config.ini (defaults laid out for ACNH: WASD left stick, IJKL camera, arrows
+    // D-pad, Space A, Shift B, X X, F Y, Q/E L/R, Z/C ZL/ZR, Enter +, Esc -).
     if (g_window && (SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS)) {
         const bool* k = SDL_GetKeyboardState(nullptr);
-        if (k[SDL_SCANCODE_A]) p.lx = -kStickMax;
-        if (k[SDL_SCANCODE_D]) p.lx = kStickMax;
-        if (k[SDL_SCANCODE_W]) p.ly = kStickMax;
-        if (k[SDL_SCANCODE_S]) p.ly = -kStickMax;
-        if (k[SDL_SCANCODE_J]) p.rx = -kStickMax;
-        if (k[SDL_SCANCODE_L]) p.rx = kStickMax;
-        if (k[SDL_SCANCODE_I]) p.ry = kStickMax;
-        if (k[SDL_SCANCODE_K]) p.ry = -kStickMax;
-        if (k[SDL_SCANCODE_LEFT]) p.buttons |= kLeft;
-        if (k[SDL_SCANCODE_RIGHT]) p.buttons |= kRight;
-        if (k[SDL_SCANCODE_UP]) p.buttons |= kUp;
-        if (k[SDL_SCANCODE_DOWN]) p.buttons |= kDown;
-        if (k[SDL_SCANCODE_SPACE]) p.buttons |= kA;
-        if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) p.buttons |= kB;
-        if (k[SDL_SCANCODE_X]) p.buttons |= kX;
-        if (k[SDL_SCANCODE_F]) p.buttons |= kY;
-        if (k[SDL_SCANCODE_Q]) p.buttons |= kL;
-        if (k[SDL_SCANCODE_E]) p.buttons |= kR;
-        if (k[SDL_SCANCODE_Z]) p.buttons |= kZL;
-        if (k[SDL_SCANCODE_C]) p.buttons |= kZR;
-        if (k[SDL_SCANCODE_RETURN]) p.buttons |= kPlus;
-        if (k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_BACKSPACE]) p.buttons |= kMinus;
+        auto key = [&](int i) { return k[opt.keys[i]]; };
+        if (key(2)) p.lx = -kStickMax;
+        if (key(3)) p.lx = kStickMax;
+        if (key(0)) p.ly = kStickMax;
+        if (key(1)) p.ly = -kStickMax;
+        if (key(6)) p.rx = -kStickMax;
+        if (key(7)) p.rx = kStickMax;
+        if (key(4)) p.ry = kStickMax;
+        if (key(5)) p.ry = -kStickMax;
+        static const uint64_t bits[14] = {kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus, kUp, kDown, kLeft, kRight};
+        for (int i = 0; i < 14; i++)
+            if (key(8 + i)) p.buttons |= bits[i];
+        if (k[SDL_SCANCODE_BACKSPACE] && opt.keys[17] == SDL_SCANCODE_ESCAPE) p.buttons |= kMinus;
     }
+    // The settings screen takes the input while it is open (and watches for its Minus + Plus combo).
+    if (nx::ui::ui_pad(p.buttons, p.lx, p.ly)) p = PadState{};
     std::lock_guard lk(g_pad_lock);
     g_pad = p;
+}
+
+// ---- settings screen hooks (platform.h) --------------------------------------------------------------------------
+
+std::atomic<float> g_volume{-1.0f};  // master volume 0..1 (-1: not read from config.ini yet; audio_cb applies it)
+
+void set_fullscreen(bool on) {
+    run_on_main([on] {
+        if (g_window) SDL_SetWindowFullscreen(g_window, on);
+    });
+}
+
+void set_master_volume(float v) { g_volume = std::clamp(v, 0.0f, 1.0f); }
+
+std::string controller_name() {
+    SDL_Gamepad* pad = g_gamepad;
+    const char* n = pad ? SDL_GetGamepadName(pad) : nullptr;
+    return n ? n : "";
+}
+
+std::string controller_kind() {
+    SDL_Gamepad* pad = g_gamepad;
+    if (!pad) return "";
+    switch (SDL_GetGamepadType(pad)) {
+        case SDL_GAMEPAD_TYPE_XBOX360:
+        case SDL_GAMEPAD_TYPE_XBOXONE: return "xbox";
+        case SDL_GAMEPAD_TYPE_PS3:
+        case SDL_GAMEPAD_TYPE_PS4:
+        case SDL_GAMEPAD_TYPE_PS5: return "playstation";
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: return "switch";
+        default: return "generic";
+    }
+}
+
+void open_path(const std::string& path) {
+    std::string url = "file://" + path;
+    if (!path.empty() && path[0] != '/') {
+        char cwd[4096];
+        if (getcwd(cwd, sizeof cwd)) url = std::string("file://") + cwd + "/" + path;
+    }
+    run_on_main([url] { SDL_OpenURL(url.c_str()); });
+}
+
+namespace {
+std::mutex g_pick_lock;
+bool g_pick_done = false;
+std::string g_pick_path;
+void SDLCALL picked(void*, const char* const* list, int) {
+    std::lock_guard lk(g_pick_lock);
+    g_pick_path = list && list[0] ? list[0] : "";
+    g_pick_done = true;
+}
+}  // namespace
+
+void pick_path(bool zip, const std::string& title) {
+    {
+        std::lock_guard lk(g_pick_lock);
+        g_pick_done = false;
+    }
+    run_on_main([zip, title] {
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_WINDOW_POINTER, g_window);
+        SDL_SetStringProperty(props, SDL_PROP_FILE_DIALOG_TITLE_STRING, title.c_str());
+        if (zip) {
+            static const SDL_DialogFileFilter filter = {"ZIP", "zip"};
+            SDL_SetPointerProperty(props, SDL_PROP_FILE_DIALOG_FILTERS_POINTER, const_cast<SDL_DialogFileFilter*>(&filter));
+            SDL_SetNumberProperty(props, SDL_PROP_FILE_DIALOG_NFILTERS_NUMBER, 1);
+        }
+        SDL_ShowFileDialogWithProperties(zip ? SDL_FILEDIALOG_OPENFILE : SDL_FILEDIALOG_OPENFOLDER, picked, nullptr, props);
+        SDL_DestroyProperties(props);
+    });
+}
+
+bool pick_result(std::string& path) {
+    std::lock_guard lk(g_pick_lock);
+    if (!g_pick_done) return false;
+    g_pick_done = false;
+    path = g_pick_path;
+    return true;
 }
 
 void read_pad(PadState& p) {
@@ -367,6 +482,20 @@ SDL_AudioStream* g_stream = nullptr;
 std::mutex g_audio;
 std::deque<Pending> g_pending;
 
+// Master volume (settings screen, live) and the mute while the window is in the background (audio.mute_background).
+void apply_gain(int16_t* pcm, int count) {
+    float v = g_volume.load(std::memory_order_relaxed);
+    if (v < 0) {
+        v = std::clamp(nx::config_get_int("audio.volume", 100), 0, 100) / 100.0f;
+        g_volume = v;
+    }
+    if (g_window && !(SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS) &&
+        nx::config_get_bool("audio.mute_background", false))
+        v = 0;
+    if (v >= 0.999f) return;
+    for (int i = 0; i < count; i++) pcm[i] = int16_t(float(pcm[i]) * v);
+}
+
 void SDLCALL audio_cb(void*, SDL_AudioStream* s, int additional, int) {
     uint8_t buf[4096];
     while (additional > 0) {
@@ -388,6 +517,7 @@ void SDLCALL audio_cb(void*, SDL_AudioStream* s, int additional, int) {
             }
         }
         if (filled < n) std::memset(buf + filled, 0, size_t(n - filled));  // underrun: silence
+        apply_gain(reinterpret_cast<int16_t*>(buf), n / 2);
         SDL_PutAudioStreamData(s, buf, n);
         for (void* ctx : finished) g_done(ctx);
         additional -= n;
@@ -491,6 +621,7 @@ void game_thread() {
 }  // namespace
 
 int main() {
+    nx::config_apply();  // config.ini -> NX_* defaults, before anything reads them (config.h)
     struct sigaction sa{};
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -514,6 +645,7 @@ int main() {
     for (;;) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            nx::ui::ui_event(e);
             switch (e.type) {
             case SDL_EVENT_QUIT:
                 nx::log("platform: quit requested (window closed / Cmd-Q)");

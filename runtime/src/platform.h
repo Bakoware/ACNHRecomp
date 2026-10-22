@@ -103,6 +103,16 @@ uint64_t memguard_overlap_ns(uint64_t from, uint64_t to);
 void thread_counters(uint64_t& cpu_ns, long faults[2], long switches[2]);
 void input_script(PadState& p);  // NX_INPUT_SCRIPT presses (input_script.cpp), for unattended runs
 
+// ---- for the settings screen (ui/settings.cpp) ----
+void set_fullscreen(bool on);                  // live
+void set_master_volume(float v);               // 0..1, live (scales the device output)
+std::string controller_name();                 // the connected controller ("" = none)
+std::string controller_kind();                 // "switch", "xbox", "playstation", "generic" or "" (none)
+void open_path(const std::string& path);       // shows a folder in the file manager
+// Asks the player for a folder (or a .zip when `zip`): the answer arrives later; poll with pick_result.
+void pick_path(bool zip, const std::string& title);
+bool pick_result(std::string& path);           // true once, when an answer came ("" = cancelled)
+
 // Audio: s16 stereo 48 kHz. `done` is called (on any thread) when a submitted buffer has been played.
 using AudioDone = void (*)(void* ctx);
 bool audio_open(AudioDone done);

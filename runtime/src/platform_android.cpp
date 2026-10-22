@@ -380,6 +380,18 @@ int vulkan_create_surface(void* instance, void* native_window, uint64_t* surface
     return r;
 }
 
+// ---- settings screen hooks (platform.h): the screen is not built for this platform yet (ui_stub.cpp) ----
+void set_fullscreen(bool) {}
+void set_master_volume(float) {}
+std::string controller_name() { return ""; }
+std::string controller_kind() { return ""; }
+void open_path(const std::string&) {}
+void pick_path(bool, const std::string&) {}
+bool pick_result(std::string& path) {
+    path.clear();
+    return false;
+}
+
 }  // namespace nx::plat
 
 // ---- crash handler and entry ----------------------------------------------------------------------------------

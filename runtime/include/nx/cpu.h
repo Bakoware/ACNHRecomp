@@ -10,6 +10,9 @@
 #include <cstring>
 #include <limits>
 #include <type_traits>
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -529,6 +532,37 @@ inline V128 mix_columns(V128 s, bool inverse) {
 }
 inline uint32_t rol(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
 inline uint32_t ror(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+
+// x86 hosts: AES-NI, when the CPU has it (decided once at run time; some older Pentium/Celeron parts lack it).
+// The software path above costs ~1000x more: ACNH decrypts its data with AESE/AESMC rounds while loading, and
+// mix_columns was the top function of the whole process during loads. The AArch64 and x86 instructions use the
+// same byte order. AESE = AESENCLAST(d ^ k, 0) (ShiftRows and SubBytes commute); AESD = AESDECLAST(d ^ k, 0);
+// AESIMC = AESIMC; AESMC = AESENC(AESDECLAST(s, 0), 0): the inverse ShiftRows/SubBytes cancel the forward ones and
+// only MixColumns remains.
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__clang__) || defined(__GNUC__))
+#define NX_AES_X86 1
+inline bool cpu_aes() {
+    static const bool v = __builtin_cpu_supports("aes");
+    return v;
+}
+#define NX_AES_TARGET __attribute__((target("aes,sse2")))
+NX_AES_TARGET inline __m128i ld128(const V128& v) { return _mm_loadu_si128(reinterpret_cast<const __m128i*>(v.u8)); }
+NX_AES_TARGET inline V128 st128(__m128i x) {
+    V128 v;
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(v.u8), x);
+    return v;
+}
+NX_AES_TARGET inline V128 x86_aese(V128 d, V128 k) {
+    return st128(_mm_aesenclast_si128(_mm_xor_si128(ld128(d), ld128(k)), _mm_setzero_si128()));
+}
+NX_AES_TARGET inline V128 x86_aesd(V128 d, V128 k) {
+    return st128(_mm_aesdeclast_si128(_mm_xor_si128(ld128(d), ld128(k)), _mm_setzero_si128()));
+}
+NX_AES_TARGET inline V128 x86_aesmc(V128 s) {
+    return st128(_mm_aesenc_si128(_mm_aesdeclast_si128(ld128(s), _mm_setzero_si128()), _mm_setzero_si128()));
+}
+NX_AES_TARGET inline V128 x86_aesimc(V128 s) { return st128(_mm_aesimc_si128(ld128(s))); }
+#endif
 }  // namespace crypto_detail
 
 // AESE: SubBytes(ShiftRows(d ^ key)); AESD the inverse; AESMC / AESIMC: (Inv)MixColumns.
@@ -536,6 +570,9 @@ inline V128 aese(V128 d, V128 k) {
 #ifdef NX_HW_CRYPTO
     return from_neon(vaeseq_u8(to_neon(d), to_neon(k)));
 #else
+#ifdef NX_AES_X86
+    if (crypto_detail::cpu_aes()) return crypto_detail::x86_aese(d, k);
+#endif
     for (int j = 0; j < 16; j++) d.u8[j] ^= k.u8[j];
     d = crypto_detail::shift_rows(d, false);
     for (auto& b : d.u8) b = crypto_detail::aes_sbox()[b];
@@ -546,6 +583,9 @@ inline V128 aesd(V128 d, V128 k) {
 #ifdef NX_HW_CRYPTO
     return from_neon(vaesdq_u8(to_neon(d), to_neon(k)));
 #else
+#ifdef NX_AES_X86
+    if (crypto_detail::cpu_aes()) return crypto_detail::x86_aesd(d, k);
+#endif
     for (int j = 0; j < 16; j++) d.u8[j] ^= k.u8[j];
     d = crypto_detail::shift_rows(d, true);
     for (auto& b : d.u8) b = crypto_detail::aes_inv_sbox()[b];
@@ -556,6 +596,9 @@ inline V128 aesmc(V128 s) {
 #ifdef NX_HW_CRYPTO
     return from_neon(vaesmcq_u8(to_neon(s)));
 #else
+#ifdef NX_AES_X86
+    if (crypto_detail::cpu_aes()) return crypto_detail::x86_aesmc(s);
+#endif
     return crypto_detail::mix_columns(s, false);
 #endif
 }
@@ -563,6 +606,9 @@ inline V128 aesimc(V128 s) {
 #ifdef NX_HW_CRYPTO
     return from_neon(vaesimcq_u8(to_neon(s)));
 #else
+#ifdef NX_AES_X86
+    if (crypto_detail::cpu_aes()) return crypto_detail::x86_aesimc(s);
+#endif
     return crypto_detail::mix_columns(s, true);
 #endif
 }

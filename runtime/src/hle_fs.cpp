@@ -112,6 +112,40 @@ std::string utf8(const fs::path& p) {
 
 std::string cstr(uint64_t p) { return p ? std::string(reinterpret_cast<const char*>(p)) : std::string(); }
 
+}  // namespace
+std::string glyph_override(const std::string& romfs_path);  // glyphs.cpp
+namespace {
+
+// Mods layered over the RomFS (LayeredFS): NX_MODS="ptbr,other" (config.ini game.mods / game.language = pt-BR).
+// A file the game opens on a RomFS mount is taken from <data root>/mods/<mod>/romfs/<same path> when a mod has it,
+// the first listed mod winning. Only files are layered (a mod replaces what the game already has).
+const std::vector<fs::path>& mod_roots() {
+    static const std::vector<fs::path> roots = [] {
+        std::vector<fs::path> v;
+        const char* e = std::getenv("NX_MODS");
+        std::string list = e ? e : "";
+        size_t pos = 0;
+        while (pos < list.size()) {
+            size_t comma = list.find(',', pos);
+            std::string name = list.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+            pos = comma == std::string::npos ? list.size() : comma + 1;
+            while (!name.empty() && name.back() == ' ') name.pop_back();
+            while (!name.empty() && name.front() == ' ') name.erase(0, 1);
+            if (name.empty() || name.find("..") != std::string::npos) continue;
+            fs::path root = data_root() / "mods" / fs::u8path(name) / "romfs";
+            std::error_code ec;
+            if (fs::is_directory(root, ec)) {
+                v.push_back(root);
+                log("fs: mod %s layered over the RomFS", name.c_str());
+            } else {
+                log("fs: mod %s not installed (%s missing)", name.c_str(), root.string().c_str());
+            }
+        }
+        return v;
+    }();
+    return roots;
+}
+
 // "mount:/a/b" -> host path; empty when the mount is unknown.
 fs::path resolve(const std::string& guest) {
     auto colon = guest.find(':');
@@ -120,6 +154,17 @@ fs::path resolve(const std::string& guest) {
     if (it == g_mounts.end()) return {};
     std::string rest = guest.substr(colon + 1);
     while (!rest.empty() && (rest[0] == '/' || rest[0] == '\\')) rest.erase(0, 1);
+    static const fs::path romfs = data_root() / "extract" / "romfs";
+    // The button icons of the chosen controller style (glyphs.cpp: a redrawn copy of the game's icon font).
+    if (it->second == romfs && !rest.empty())
+        if (std::string g = glyph_override(rest); !g.empty()) return fs::u8path(g);
+    if (!mod_roots().empty() && it->second == romfs && !rest.empty()) {
+        std::error_code ec;
+        for (const fs::path& root : mod_roots()) {
+            fs::path p = root / fs::u8path(rest);
+            if (fs::is_regular_file(p, ec)) return p;
+        }
+    }
     return it->second / fs::u8path(rest);
 }
 

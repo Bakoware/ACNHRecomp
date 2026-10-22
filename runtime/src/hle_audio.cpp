@@ -16,6 +16,7 @@
 #include <thread>
 #include <vector>
 
+#include "config.h"
 #include "kernel.h"
 #include "platform.h"
 
@@ -703,12 +704,17 @@ namespace {
 void ApplyI3dl2ReverbEffect(CPU& c) {
     static const uint64_t real = find_symbol(
         "_ZN2nn5audio22ApplyI3dl2ReverbEffectERKNS0_20I3dl2ReverbParameterEPNS0_16I3dl2ReverbStateEbPPKiPPii");
-    static const bool off = [] {
+    // NX_AUDIO_REVERB=0 at startup, or the settings screen's audio.reverb switched live.
+    static const bool env_off = [] {
         const char* e = std::getenv("NX_AUDIO_REVERB");
         bool o = e && e[0] == '0';
         if (o) log("audio: I3DL2 reverb bypassed (NX_AUDIO_REVERB=0)");
         return o;
     }();
+    static uint64_t gen = 0;
+    static bool cfg_off = false;
+    if (uint64_t g = config_generation(); g != gen) gen = g, cfg_off = !config_get_bool("audio.reverb", true);
+    const bool off = env_off || cfg_off;
     if (!real) return;
     if (off) c.x[2] = 0;
     call(c, real);
