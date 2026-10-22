@@ -274,6 +274,16 @@ void QueueWaitSync(CPU& c) { c.x[0] = 1; }  // NVNboolean (NVNqueue*, const NVNs
 
 // ---- windows ----------------------------------------------------------------------------------------------------
 
+// NX_PRESENT_INTERVAL=<n>: the window presents every n-th vsync whatever the game asks (2 = 30 fps, 1 = 60 fps). For
+// measuring how a game's logic follows the interval (a 60 fps mode needs its time step to follow).
+int forced_interval(int asked) {
+    static const int forced = [] {
+        const char* e = std::getenv("NX_PRESENT_INTERVAL");
+        return e ? std::atoi(e) : 0;
+    }();
+    return forced > 0 ? forced : asked;
+}
+
 void WindowInitialize(CPU& c) {  // NVNboolean (NVNwindow*, const NVNwindowBuilder*)
     uint64_t guest = c.x[0], builder = c.x[1];
     auto& w = make<Window>(guest);
@@ -281,7 +291,7 @@ void WindowInitialize(CPU& c) {  // NVNboolean (NVNwindow*, const NVNwindowBuild
     for (int k = 0; k < n; k++) w.textures.push_back(driver(c, "nvnWindowBuilderGetTexture", {builder, uint64_t(k)}));
     w.active = int(driver(c, "nvnWindowBuilderGetNumActiveTextures", {builder}));
     if (w.active <= 0 || w.active > n) w.active = n;
-    w.interval = int(driver(c, "nvnWindowBuilderGetPresentInterval", {builder}));
+    w.interval = forced_interval(int(driver(c, "nvnWindowBuilderGetPresentInterval", {builder})));
     log("nvn: window %llx: %d textures (%d active), present interval %d", (unsigned long long)guest, n, w.active, w.interval);
     c.x[0] = 1;
 }
@@ -538,10 +548,11 @@ void frame_time_probe(CPU& c) {
 void WindowSetPresentInterval(CPU& c) {
     frame_time_probe(c);
     if (auto* w = get<Window>(c.x[0])) {
+        int interval = forced_interval(int(c.x[1]));
         static int logged = 0;
-        if (w->interval != int(c.x[1]) && logged++ < 50)
-            log("nvn: window present interval %d -> %d (frame %llu)", w->interval, int(c.x[1]), (unsigned long long)g_frame.load());
-        w->interval = int(c.x[1]);
+        if (w->interval != interval && logged++ < 50)
+            log("nvn: window present interval %d -> %d (frame %llu)", w->interval, interval, (unsigned long long)g_frame.load());
+        w->interval = interval;
     }
 }
 

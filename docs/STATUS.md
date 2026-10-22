@@ -37,8 +37,11 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | Fundo atrás dos diálogos do Timmy | 🔧 preto: painéis Ui2d (BC4) cobrem a cena; investigando se é transição legítima |
 | Registro completo: nome (`+` confirma), aniversário | ✅ (o jogo recusa nomes com mais de 5 algarismos, como no console) |
 | DLC (`aoc:u` + `MountAddOnContent`): os dois pacotes do dump montados | ✅ |
-| Filme de abertura (`OpeningMovie.webm`, VP9 + Vorbis): decodificador VP9 por software (libvpx) | ✅ decodificando |
-| Ilha / gameplay | ⏳ |
+| Escolhas da introdução: estilo, pele, hemisfério, mapa da ilha, avião | ✅ |
+| Filme de abertura (`OpeningMovie.webm`, VP9 + Vorbis, 65 s) inteiro, em cores, com som | ✅ |
+| Chegada à ilha ("We're here!"), diálogos do Timmy no píer | ✅ |
+| Cenário 3D da ilha | 🔧 água, céu, nuvens e vidro aparecem; terreno, personagens e objetos opacos não |
+| Gameplay livre na ilha | ⏳ |
 
 ## Problemas encontrados e resolvidos
 
@@ -81,6 +84,16 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
     contrato (índices de buffers de entrada/saída, quatro eventos), decodificada com libvpx em NV12
     (`runtime/src/hle_movie.cpp`). O áudio (Vorbis) continua no decodificador do SDK, que é software.
 
+23. **Kernel (compartilhado)**: `svcWaitSynchronization` descartava um `CancelSynchronization` que chegava antes da
+    espera. No Horizon ele fica pendente até uma espera consumi-lo; é assim que `nn::os::MultiWait` acorda quem espera
+    eventos. Sem isso, acordadas se perdiam ao acaso (o player do filme travava num quadro aleatório).
+24. **NVN**: `nvnCommandBufferCopyBufferToTexture` não existia no runtime (caía num stub neutro): agora é gravado e
+    reproduzido como `vkCmdCopyBufferToImage` a partir dos bytes do jogo. O filme copia seus planos NV12 assim.
+25. `nn::friends` (offline: sem amigos, sem bloqueados, sem conta de rede): `GetBlockedUserList` lia um ponteiro nulo
+    ao chegar na ilha.
+26. Decodificador do filme: depois da entrada de fim de stream não oferece mais buffers (como o MediaCodec); senão a
+    fila de mensagens do jogo enchia e o encerramento do player esperava para sempre.
+
 ## Próximos passos (pedidos)
 
 - **60 fps**: o jogo amarra a lógica a 30 quadros por segundo; precisa de um patch que mude o intervalo de
@@ -110,3 +123,5 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | `NX_INPUT=quadro:Botão,...` | aperta botões em quadros definidos (testes automáticos) |
 | `NX_TIME_OFFSET=<segundos>` | desloca o relógio do jogo (viagem no tempo) |
 | `NX_USER_NAME=<nome>` | nome do usuário do sistema (padrão: o do computador) |
+| `NX_MOVIE_TRACE=1` / `NX_MOVIE_STATS=1` | cada chamada ao decodificador do filme / estado dos buffers a cada 2 s |
+| `NX_AUDIO_OUT_STATS=1` | buffers do `AudioOut` (anexados, tocados, devolvidos) a cada 2 s |
