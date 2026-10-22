@@ -47,21 +47,28 @@ void widen_sys_budget() {
 
 }  // namespace
 
-// The engine's "clear on bind" (main+37fb390) clears a render target every time the UI switches back to it, so each
-// capture-texture element wiped what was drawn before it and the composite then read a cleared HDR target: a black
-// screen. On the console those clears are gated by per-buffer state the GPU keeps; until that is modelled, the clears
-// called from there (main+37fb4fc) are dropped, which is what the console's output shows. NX_SKIP_CLEAR_AT=0 restores them.
-void skip_bind_clears() {
+// The engine's "clear on bind" (main+37fb390) clears a render target every time a pass binds it: colour from
+// main+37fb4fc, depth/stencil from main+37fb744. On the console the clear is skipped when the target needs none
+// (per-buffer state the GPU keeps). Kept every time:
+//  - a re-bind of the HDR target wiped the UI captures drawn into it before (a black screen): those colour clears
+//    are dropped (NX_SKIP_CLEAR_AT);
+//  - a re-bind of the scene's depth wiped the depth pre-pass, and the colour pass (depth EQUAL) drew the back wall
+//    over the characters: only the first depth clear of each target in a frame is kept (NX_CLEAR_ONCE_AT,
+//    runtime/src/nvn/nvn_cmd.cpp).
+// Either variable set by hand (empty: off) overrides these.
+void bind_clears() {
 #if defined(_WIN32)
     if (!std::getenv("NX_SKIP_CLEAR_AT")) _putenv_s("NX_SKIP_CLEAR_AT", "37fb4fc");
+    if (!std::getenv("NX_CLEAR_ONCE_AT")) _putenv_s("NX_CLEAR_ONCE_AT", "37fb744");
 #else
     setenv("NX_SKIP_CLEAR_AT", "37fb4fc", 0);
+    setenv("NX_CLEAR_ONCE_AT", "37fb744", 0);
 #endif
 }
 
 void game::after_init() {
     widen_sys_budget();
-    skip_bind_clears();
+    bind_clears();
 }
 void game::renderer_start() {}
 void game::first_frame() {}

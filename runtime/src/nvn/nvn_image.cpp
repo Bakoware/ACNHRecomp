@@ -76,6 +76,19 @@ struct StorageKey {
     }
 };
 std::map<StorageKey, std::weak_ptr<GpuImage>> g_live_images;
+// Render targets (flag 8) of a game that re-initializes its NVNtexture structs over and over (ACNH: one transient pool,
+// each frame the same structs become a shadow map, the scene's depth, a UI capture, ... over the same memory) keep
+// their image for good, keyed by storage: with only weak references the scene depth the pre-pass wrote was dropped
+// when its struct was re-initialized, and the colour pass got a fresh, empty image (the walls drawn over the
+// characters). Render targets are few and repeat every frame; assets keep the weak rule. NX_RT_KEEP=0: off.
+std::map<StorageKey, std::shared_ptr<GpuImage>> g_kept_targets;
+bool keep_targets() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_RT_KEEP");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
 
 GpuImage* image_of(uint64_t guest) {
     Texture* t = get<Texture>(guest);
@@ -100,6 +113,13 @@ GpuImage* image_of(uint64_t guest) {
                 t->image = shared;
                 return shared.get();
             }
+    const bool kept = keep_targets() && share && t->memory && (t->flags & 8) && !widened;
+    if (kept)
+        if (auto it = g_kept_targets.find(key); it != g_kept_targets.end() && it->second->image) {
+            t->image = it->second;
+            g_live_images[key] = it->second;
+            return t->image.get();
+        }
     if ((t->image = reuse_image(*t))) return t->image.get();
     auto img = std::make_shared<GpuImage>();
     img->format = bc_host_decode(t->format) ? bc_decoded_format(t->format) : vk_format(t->format);  // nvn_bc.cpp
@@ -215,6 +235,12 @@ GpuImage* image_of(uint64_t guest) {
             img->width, img->height, img->layers, img->levels, t->target, t->format, int(img->format));
     t->image = img;
     if (t->memory) g_live_images[key] = img;
+    if (kept) {
+        g_kept_targets[key] = img;
+        static size_t logged = 0;
+        if (g_kept_targets.size() >= logged + 16)
+            logged = g_kept_targets.size(), log("nvn/vk: %zu render-target images kept by storage", logged);
+    }
     return img.get();
 }
 

@@ -318,7 +318,10 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
     // NX_TRACE_FS_HASH=<hash>[,<hash>...]: only draws with those fragment shaders.
     static const char* fs_env = std::getenv("NX_TRACE_FS_HASH");
     static const uint64_t trace_count = std::getenv("NX_TRACE_COUNT") ? std::strtoull(std::getenv("NX_TRACE_COUNT"), nullptr, 10) : 80;
+    // NX_TRACE_FRAME=<present>: only draws replayed once that many frames were presented.
+    static const uint64_t trace_frame = std::getenv("NX_TRACE_FRAME") ? std::strtoull(std::getenv("NX_TRACE_FRAME"), nullptr, 10) : 0;
     if (trace_env && g_stats.done >= trace_from && traced < trace_count && (!trace_target || t.colors[0] == trace_target) &&
+        g_frame.load(std::memory_order_relaxed) >= trace_frame &&
         (!fs_env || (fs && std::strstr(fs_env, fs->hash.c_str())))) {  // one hash or a comma list
         traced++;
         // NX_TRACE_VERTS=1: the first 3 vertices of stream 0 as floats and halves (8 words each at most).
