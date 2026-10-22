@@ -23,11 +23,12 @@ using namespace plat;
 constexpr uint32_t kStyleFullKey = 1u << 0;
 uint64_t g_sampling = 0;
 
-// Scripted input for automated runs: NX_INPUT="3300:A,3900:A,4200:Down" holds the button for 8 frames from the
-// given presented frame.
+// Scripted input for automated runs: NX_INPUT="3300:A,3900:A,4200:Down,4300:LUp" holds the button (or tilts the left
+// stick: LUp, LDown, LLeft, LRight) for 8 frames from the given presented frame.
 struct Scripted {
     uint64_t frame;
     uint64_t buttons;
+    int32_t lx = 0, ly = 0;  // left stick (LUp, LDown, LLeft, LRight): full tilt
 };
 
 std::vector<Scripted> input_script() {
@@ -45,7 +46,12 @@ std::vector<Scripted> input_script() {
             uint64_t bits = b == "A" ? kA : b == "B" ? kB : b == "X" ? kX : b == "Y" ? kY : b == "Plus" ? kPlus :
                             b == "Minus" ? kMinus : b == "Up" ? kUp : b == "Down" ? kDown : b == "Left" ? kLeft :
                             b == "Right" ? kRight : b == "L" ? kL : b == "R" ? kR : 0;
-            v.push_back({std::strtoull(item.c_str(), nullptr, 10), bits});
+            Scripted sc{std::strtoull(item.c_str(), nullptr, 10), bits};
+            if (b == "LUp") sc.ly = kStickMax;
+            if (b == "LDown") sc.ly = -kStickMax;
+            if (b == "LLeft") sc.lx = -kStickMax;
+            if (b == "LRight") sc.lx = kStickMax;
+            v.push_back(sc);
         }
         if (comma == std::string::npos) break;
         pos = comma + 1;
@@ -59,6 +65,8 @@ PadState read() {
     for (const auto& s : script)
         if (g_frame >= s.frame && g_frame < s.frame + 8) p.buttons |= s.buttons;
     read_pad(p);
+    for (const auto& s : script)  // after the pad: the script's stick wins while it holds it
+        if ((s.lx || s.ly) && g_frame >= s.frame && g_frame < s.frame + 8) p.lx = s.lx, p.ly = s.ly;
     // Stick directions as buttons, like the hid sysmodule reports them.
     constexpr int32_t t = kStickMax / 2;
     if (p.lx < -t) p.buttons |= kStickLLeft;

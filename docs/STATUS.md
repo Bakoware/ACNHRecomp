@@ -34,14 +34,15 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | **UI na tela**: tela de carregamento, diálogos do Timmy | ✅ |
 | **Criação de personagem** (registro Nook Inc.) com o teclado do próprio jogo | ✅ digitação funciona |
 | Renderização 3D (cena do oceano ao entardecer, terreno em alvos menores) | ✅ conferida por dump |
-| Fundo atrás dos diálogos do Timmy | 🔧 preto: painéis Ui2d (BC4) cobrem a cena; investigando se é transição legítima |
+| Cena 3D da abertura (Timmy e Tommy no balcão da Nook Inc.) | ✅ |
 | Registro completo: nome (`+` confirma), aniversário | ✅ (o jogo recusa nomes com mais de 5 algarismos, como no console) |
 | DLC (`aoc:u` + `MountAddOnContent`): os dois pacotes do dump montados | ✅ |
 | Escolhas da introdução: estilo, pele, hemisfério, mapa da ilha, avião | ✅ |
 | Filme de abertura (`OpeningMovie.webm`, VP9 + Vorbis, 65 s) inteiro, em cores, com som | ✅ |
 | Chegada à ilha ("We're here!"), diálogos do Timmy no píer | ✅ |
-| Cenário 3D da ilha | 🔧 água, céu, nuvens e vidro aparecem; terreno, personagens e objetos opacos não |
-| Gameplay livre na ilha | ⏳ |
+| Ilha em 3D: píer da Dodo Airlines, personagens, água, árvores, tela de título com a ilha | ✅ |
+| Controle livre do personagem na ilha (andar, câmera acompanha) | ✅ |
+| Um morador aparece com a cabeça preta no píer | 🔧 material/shader daquele modelo |
 
 ## Problemas encontrados e resolvidos
 
@@ -94,6 +95,14 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 26. Decodificador do filme: depois da entrada de fim de stream não oferece mais buffers (como o MediaCodec); senão a
     fila de mensagens do jogo enchia e o encerramento do player esperava para sempre.
 
+27. **Cena 3D preta / parede por cima dos personagens**: o "clear on bind" do motor (`main+37fb390`) limpa também a
+    profundidade (`main+37fb744`) a cada vez que um passe liga o alvo. O passe de cor religa o alvo da cena depois do
+    pré-passe de profundidade, então a profundidade era apagada e o passe de cor (teste EQUAL) desenhava tudo em
+    ordem: a parede do fundo cobria Timmy e Tommy, e o resultado ficava preto. Agora só a primeira limpeza de
+    profundidade de cada alvo por quadro é mantida (`NX_CLEAR_ONCE_AT`, em `nvn_cmd.cpp`); as limpezas de cor dali
+    continuam descartadas. Imagens de alvos de render ficam guardadas por memória (o jogo reinicializa os mesmos
+    `NVNtexture` várias vezes por quadro).
+
 ## Próximos passos (pedidos)
 
 - **60 fps**: o jogo amarra a lógica a 30 quadros por segundo; precisa de um patch que mude o intervalo de
@@ -118,9 +127,12 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | arquivo `private/acnh/dump_threads` | despeja o estado de todas as threads no log |
 | `NX_TRACE_SUBMITS=<quadro>` | esboço das listas de comandos submetidas (alvos, clears, scissor, desenhos) |
 | `NX_TRACE_RECORD=<quadro>` | `SetRenderTargets`/`ClearColor`/`SetScissor` como o jogo grava, com o chamador |
-| `NX_SKIP_CLEAR_AT=<offset do main>` | ignora os clears chamados daquele ponto (bisecção) |
+| `NX_SKIP_CLEAR_AT=<offset do main>` | ignora os clears de cor chamados daquele ponto |
+| `NX_SKIP_DEPTH_CLEAR_AT=<offset>` / `NX_CLEAR_ONCE_AT=<offsets>` | ignora os clears de profundidade dali / mantém só o primeiro por alvo e quadro |
+| `NX_TRACE_FRAME=<quadro>` | com `NX_TRACE_DRAWS`, só desenhos a partir daquele quadro |
+| `NX_PRESENT_INTERVAL=<n>` | força o intervalo de apresentação (1 = 60 fps) |
 | `NX_SNAP_FOLLOW=<hash do fs>@<desenho>` | captura o alvo depois de cada desenho seguinte |
-| `NX_INPUT=quadro:Botão,...` | aperta botões em quadros definidos (testes automáticos) |
+| `NX_INPUT=quadro:Botão,...` | aperta botões (ou `LUp`/`LDown`/`LLeft`/`LRight`: analógico) em quadros definidos |
 | `NX_TIME_OFFSET=<segundos>` | desloca o relógio do jogo (viagem no tempo) |
 | `NX_USER_NAME=<nome>` | nome do usuário do sistema (padrão: o do computador) |
 | `NX_MOVIE_TRACE=1` / `NX_MOVIE_STATS=1` | cada chamada ao decodificador do filme / estado dos buffers a cada 2 s |
