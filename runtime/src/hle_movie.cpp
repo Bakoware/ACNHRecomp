@@ -82,6 +82,7 @@ struct Decoder {
     std::deque<Frame> outputs;
     int next_out = 0;
     bool started = false, format_sent = false;
+    bool eos = false;  // the end-of-stream input came: no more input buffers until Flush/Stop (as MediaCodec)
     uint64_t frames = 0;
     uint64_t sent = 0, acquired = 0, copied = 0, released = 0;  // logged every 300 frames copied
     uint64_t last_dst = 0, last_cap = 0;
@@ -406,6 +407,7 @@ void Flush(CPU& c) {  // also Stop and Reset: drop everything in flight, every i
         std::lock_guard lk(d->lock);
         d->outputs.clear();
         d->held_inputs.clear();
+        d->eos = false;
         d->free_inputs.clear();
         for (int k = 0; k < kInputs; k++) d->free_inputs.push_back(k);
         started = d->started;
@@ -428,7 +430,7 @@ void AcquireInputBufferIndex(CPU& c) {  // Status (int* index, int* remaining)
     std::lock_guard lk(d->lock);
     st<int32_t>(c.x[1], -1);
     st<int32_t>(c.x[2], 0);
-    if (d->free_inputs.empty()) return void(c.x[0] = kNoBuffer);
+    if (d->free_inputs.empty() || d->eos) return void(c.x[0] = kNoBuffer);
     st<int32_t>(c.x[1], d->free_inputs.front());
     d->free_inputs.pop_front();
     st<int32_t>(c.x[2], int32_t(d->free_inputs.size()));
@@ -464,7 +466,10 @@ void SendInputBufferForDecode(CPU& c) {
                 (unsigned long long)d->sent, size, (long long)pts, flags, (unsigned long long)d->frames, d->outputs.size());
         output = d->outputs.size() > before;
         if (output && !d->format_sent && (d->width || d->channels)) d->format_sent = format_changed = true;
-        if (d->outputs.size() < kOutputs)
+        if (flags & kFlagEos) d->eos = true;
+        if (d->eos)
+            d->free_inputs.push_back(index);  // kept, not offered (the game's reader has finished; its queue fills)
+        else if (d->outputs.size() < kOutputs)
             d->free_inputs.push_back(index), input_back = true;
         else
             d->held_inputs.push_back(index);
@@ -532,7 +537,7 @@ void ReleaseOutputBufferIndex(CPU& c) {  // Status (int index)
         while (!d->held_inputs.empty() && d->outputs.size() < kOutputs) {
             d->free_inputs.push_back(d->held_inputs.front());
             d->held_inputs.pop_front();
-            input_back = true;
+            input_back = !d->eos;
         }
     }
     if (input_back) signal(c, *d, 0);
