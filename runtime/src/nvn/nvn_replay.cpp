@@ -82,6 +82,7 @@ void replay_list(VkCommandBuffer cb, Targets& st, const CmdList& list, int depth
                 if (gpu_profile_on()) gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
                 break;
             case Cmd::CopyBufferToTexture:
+            case Cmd::CopyTextureToBuffer:
                 draw_end_rendering(cb, 5);
                 replay_buffer_copy(cb, c, list);
                 break;

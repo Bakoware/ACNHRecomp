@@ -91,6 +91,13 @@ def analyze(m, log=print):
     text_end = t0 + tn
 
     an.got_imports = nso.plt_imports(m)
+    # GOT slots of the module's own exports (a PLT call to a function it defines itself, as the SDK calls its setjmp):
+    # named for the emitter's special cases, not treated as imports.
+    an.got_local = {}
+    for r in m.relocs:
+        if r.type in (nso.R_AARCH64_JUMP_SLOT, nso.R_AARCH64_GLOB_DAT) and r.sym and not m.symbols[r.sym].imported:
+            an.got_local[r.offset] = m.symbols[r.sym].name
+    an.plt_local = {}
     for s in m.symbols:
         if s.name and not s.imported and m.in_text(s.value):
             an.names[s.value] = s.name
@@ -104,6 +111,8 @@ def analyze(m, log=print):
                 off = IMM.search(nxt[0][1])
                 got = page + (_imm(off.group(1)) if off else 0)
                 an.plt[a] = an.got_imports.get(got, f"got_{got:x}")
+                if got in an.got_local:
+                    an.plt_local[a] = an.got_local[got]
 
     # Seeds.
     fdes = [f for f in ehframe.parse(m) if t0 <= f.start < text_end]

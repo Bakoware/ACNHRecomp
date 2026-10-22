@@ -84,11 +84,19 @@ void CopyBufferToTexture(CPU& c) {
     record(c.x[0], cmd, &info, sizeof info);
 }
 
-// The reverse (a texture read back into a buffer: screenshots, thumbnails) needs a write-back to guest memory after
-// the submit; not replayed yet, logged once.
+// nvnCommandBufferCopyTextureToBuffer(cmd, const NVNtexture* src, const NVNtextureView* srcView,
+// const NVNcopyRegion* srcRegion, NVNbufferAddress dst, int flags): the reverse, texels packed row after row at the
+// destination. Replayed as a vkCmdCopyImageToBuffer into the upload ring, copied to guest memory once the submit
+// completed (a write-back, as compute results are). ACNH renders parts of its characters' textures and reads them
+// back this way (main+37fb298).
 void CopyTextureToBuffer(CPU& c) {
-    static bool logged = false;
-    if (!logged) logged = true, log("nvn: nvnCommandBufferCopyTextureToBuffer is not replayed (lr %s)", describe(c.x[30]).c_str());
+    BufferCopyInfo info;
+    info.view = read_view(c, c.x[2]);
+    for (int k = 0; k < 6; k++) info.region[k] = c.x[3] ? ld<int32_t>(c.x[3] + 4ull * k) : 0;
+    info.flags = uint32_t(c.x[5]);
+    Cmd cmd{Cmd::CopyTextureToBuffer};
+    cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
+    record(c.x[0], cmd, &info, sizeof info);
 }
 
 }  // namespace
@@ -97,14 +105,16 @@ void replay_buffer_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     if (c.blob >= list.blobs.size() || list.blobs[c.blob].size() != sizeof(BufferCopyInfo)) return;
     BufferCopyInfo info;
     std::memcpy(&info, list.blobs[c.blob].data(), sizeof info);
-    Texture* t = get<Texture>(c.a[1]);
-    const uint8_t* src = replay::guest_bytes(c.a[0]);
-    GpuImage* dst = t && src ? ensure_contents(cb, c.a[1]) : nullptr;
+    const bool to_buffer = c.op == Cmd::CopyTextureToBuffer;
+    const uint64_t texture = to_buffer ? c.a[0] : c.a[1], address = to_buffer ? c.a[1] : c.a[0];
+    Texture* t = get<Texture>(texture);
+    const uint8_t* src = replay::guest_bytes(address);  // the buffer side, either way
+    GpuImage* dst = t && src ? ensure_contents(cb, texture) : nullptr;
     auto skip = [&](const char* why) {
         static int logged = 0;
         if (logged++ < 8)
-            log("nvn: buffer copy %llx -> texture %llx not replayed: %s", (unsigned long long)c.a[0],
-                (unsigned long long)c.a[1], why);
+            log("nvn: buffer copy %llx %s texture %llx not replayed: %s", (unsigned long long)address,
+                to_buffer ? "<-" : "->", (unsigned long long)texture, why);
     };
     if (!dst) return skip(src ? "no image" : "source not in a pool");
     uint32_t bw = 1, bh = 1, bytes = 0;
@@ -118,7 +128,7 @@ void replay_buffer_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     uint64_t rows = (uint64_t(h) + bh - 1) / bh, row = (uint64_t(w) + bw - 1) / bw * bytes;
     uint64_t size = row * rows * uint64_t(depth);
     if (size > (256ull << 20)) return skip("implausible size");
-    Upload u = upload(src, size, 16);
+    Upload u = to_buffer ? upload_alloc(size, 256) : upload(src, size, 16);
     uint32_t level = std::min(info.view.base_level, dst->levels - 1);
     uint32_t layer = is3d ? 0 : std::min<uint32_t>(uint32_t(std::max(info.region[2], 0)) + info.view.min_layer, dst->layers - 1);
     VkBufferImageCopy r{};
@@ -126,6 +136,23 @@ void replay_buffer_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     r.imageSubresource = {dst->aspect, level, layer, is3d ? 1u : std::min<uint32_t>(uint32_t(depth), dst->layers - layer)};
     r.imageOffset = {x, y, is3d ? info.region[2] : 0};
     r.imageExtent = {uint32_t(w), uint32_t(h), is3d ? uint32_t(depth) : 1u};
+    if (to_buffer) {
+        transition(cb, *dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        p_vkCmdCopyImageToBuffer(cb, dst->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, u.buffer, 1, &r);
+        VkBufferMemoryBarrier b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.buffer = u.buffer, b.offset = u.offset, b.size = size;
+        p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &b, 0,
+                               nullptr);
+        replay::separate_write_backs().push_back({u.ptr, const_cast<uint8_t*>(src), size, nullptr});
+        static uint64_t n = 0;
+        if (++n == 1 || n % 1000 == 0)
+            log("nvn: %llu texture-to-buffer copies (this one %dx%d, %llu bytes, format %#x)", (unsigned long long)n, w,
+                h, (unsigned long long)size, t->format);
+        return;
+    }
     transition(cb, *dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     p_vkCmdCopyBufferToImage(cb, u.buffer, dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
     dst->rendered = true;  // GPU-written from now on: not uploaded again from the texture's own memory

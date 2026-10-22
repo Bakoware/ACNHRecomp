@@ -42,7 +42,7 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | Chegada à ilha ("We're here!"), diálogos do Timmy no píer | ✅ |
 | Ilha em 3D: píer da Dodo Airlines, personagens, água, árvores, tela de título com a ilha | ✅ |
 | Controle livre do personagem na ilha (andar, câmera acompanha) | ✅ |
-| Um morador aparece com a cabeça preta no píer | 🔧 material/shader daquele modelo |
+| Alguns moradores (pássaros) com parte da cabeça preta | 🔧 os moradores iniciais são sorteados; não reproduz sempre |
 
 ## Problemas encontrados e resolvidos
 
@@ -102,6 +102,12 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
     profundidade de cada alvo por quadro é mantida (`NX_CLEAR_ONCE_AT`, em `nvn_cmd.cpp`); as limpezas de cor dali
     continuam descartadas. Imagens de alvos de render ficam guardadas por memória (o jogo reinicializa os mesmos
     `NVNtexture` várias vezes por quadro).
+
+28. **`setjmp` do SDK**: o `sdk` define o próprio `setjmp` e o chama pela PLT dele; o recompilador só reconhecia
+    importados, então a libjpeg/libpng do SDK (fotos) fazia `longjmp` sem destino e o processo abortava. Agora chamadas
+    a um `setjmp` definido no próprio módulo também ganham o `try` (`recomp/analysis.py`, `recomp/emit.py`).
+29. `nvnCommandBufferCopyTextureToBuffer`: reproduzido como `vkCmdCopyImageToBuffer` e copiado para a memória do jogo
+    depois do submit (o jogo lê de volta, por exemplo, a foto 500x500 do passaporte).
 
 ## Próximos passos (pedidos)
 

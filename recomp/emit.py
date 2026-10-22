@@ -299,7 +299,9 @@ class Emitter(Sdk20Ops, ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
 
     def i_bl(self, f, i, ops):
         t = self.target(ops[0])
-        if self.an.plt.get(t) in ("setjmp", "_setjmp", "__setjmp"):
+        setjmp = ("setjmp", "_setjmp", "__setjmp")
+        if (self.an.plt.get(t) in setjmp or getattr(self.an, "plt_local", {}).get(t) in setjmp or
+                self.an.names.get(t) in setjmp):
             # setjmp: remember the callee-saved state; a later longjmp on this buffer lands at the next label.
             k = len(self.setjmp_sites)
             self.setjmp_sites.append(i.address + 4)
