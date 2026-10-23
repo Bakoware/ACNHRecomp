@@ -3,6 +3,12 @@
 **A native PC port of Animal Crossing: New Horizons, made by static recompilation.**
 
 <p align="center">
+  <a href="https://discord.gg/VJW9Dtdu7a">
+    <img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord Community">
+  </a>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/island-arrival.jpg" alt="Arriving on the island, running natively" width="100%">
 </p>
 
@@ -22,8 +28,24 @@ natively, and the game's NVN graphics calls are translated to **Vulkan**. It is 
 > The detailed developer documentation ([docs/STATUS.md](docs/STATUS.md), [docs/REFERENCES.md](docs/REFERENCES.md))
 > is written in Portuguese for now; [docs/ACNH.md](docs/ACNH.md) is in English.
 
+## Community
+
+[![Join our Discord](https://img.shields.io/badge/Discord-Join%20our%20Community%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/VJW9Dtdu7a)
+
+> [!TIP]
+> **Join our Discord Server!** Connect with fellow players, testers, and developers:
+> [**discord.gg/VJW9Dtdu7a**](https://discord.gg/VJW9Dtdu7a)
+
+Whether you're playing, helping test builds across different hardware, or following the project's progress, everyone is welcome!
+
+- 🏝️ **Community & Discussion**: Hang out, share your island, and discuss Animal Crossing recompilation.
+- 💬 **Help & Support**: Get quick guidance with key dumping, game imports, building, and troubleshooting.
+- ⚙️ **Testing & Hardware**: Share logs, test results across different CPUs and GPUs, and report bugs.
+- 📢 **Development Updates**: Get real-time announcements, test builds, and sneak peeks at upcoming features.
+
 ## Contents
 
+- [Community](#community)
 - [Features](#features)
 - [Screenshots](#screenshots)
 - [Status](#status)
@@ -489,6 +511,9 @@ Yes. The island follows your computer's date, time and time zone.
 
 **Can I get a prebuilt download?**
 No. A build contains recompiled game code, so it has to be produced from your own dump.
+
+**Still need help or ran into an unexpected bug?**
+Join our [Discord Community](https://discord.gg/VJW9Dtdu7a) with your hardware details and log files (`private/acnh/nx_play.log`).
 
 ## Repository layout
 
