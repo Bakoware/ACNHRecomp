@@ -9,7 +9,7 @@
 #                              [--out <folder>]          (the game's folder: import, generated code, build; default
 #                                                         private/acnh. The launcher passes its install folder)
 #          tools/setup_acnh.sh                       (later runs: the import is done, the rest is checked)
-#   env:   JOBS=<compile jobs> (default: RAM in GB / 3, at most the core count)   FORCE=<stage> to redo one stage
+#   env:   JOBS=<compile jobs> (default: free RAM / 700 MB, at most the core count)   FORCE=<stage> to redo one stage
 #
 # Stages: tools (venv, Vulkan headers, .NET, Ryujinx source, hactool-free importer) -> import -> recompile ->
 # shaders -> fonts -> build. Everything it writes stays in private/ (gitignored) and the --out folder. The lines
@@ -42,12 +42,22 @@ need() { command -v "$1" >/dev/null || { echo "missing: $1 (see README, Requirem
 force() { [ "${FORCE:-}" = "$1" ]; }
 need clang; need clang++; need curl; need tar; need python3
 
+# Memory for compile jobs: what is free now (Linux) or half the RAM (macOS), less 1 GB for the rest of the system.
+# A compiler job on the generated code peaks at about 600 MB (900 MB for the largest file), the link at 500 MB, so
+# 4 GB machines run 3 jobs and 6 GB machines 5.
 if [ "$(uname)" = Darwin ]; then
-  NPROC=$(sysctl -n hw.ncpu); RAM=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+  NPROC=$(sysctl -n hw.ncpu); FREE_MB=$(( $(sysctl -n hw.memsize) / 2097152 ))
 else
-  NPROC=$(nproc); RAM=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1048576 ))
+  NPROC=$(nproc); FREE_MB=$(( $(awk '/MemAvailable/ {print $2}' /proc/meminfo) / 1024 ))
+  # Inside a memory-limited cgroup (a container, systemd-run -p MemoryMax=...), its limit counts.
+  CG=/sys/fs/cgroup$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup 2>/dev/null)
+  if [ -r "$CG/memory.max" ] && [ "$(cat "$CG/memory.max")" != max ]; then
+    CG_MB=$(( ($(cat "$CG/memory.max") - $(cat "$CG/memory.current")) / 1048576 ))
+    [ "$CG_MB" -ge "$FREE_MB" ] || FREE_MB=$CG_MB
+  fi
 fi
-JOBS=${JOBS:-$(( RAM / 3 > 0 ? RAM / 3 : 1 ))}
+JOBS=${JOBS:-$(( (FREE_MB - 1000) / 700 ))}
+[ "$JOBS" -ge 1 ] || JOBS=1
 [ "$JOBS" -le "$NPROC" ] || JOBS=$NPROC
 
 # ---- tools ----------------------------------------------------------------------------------------------------
@@ -148,9 +158,11 @@ done
 # ---- recompile ------------------------------------------------------------------------------------------------
 say "recompile (main, sdk, subsdk0)"
 recomp() {  # module base
-  local m=$1 b=$2
-  if [ ! -f "$G/gen/$m/table.cpp" ] || [ "recomp/emit.py" -nt "$G/gen/$m/table.cpp" ] || force recomp; then
-    "$PY" -m recomp "$G/exefs/$m" "$G/gen/$m" --name "$m" --base "$b" > "$G/logs/recomp_$m.log" 2>&1
+  local m=$1 b=$2 H=()
+  [ "$m" = main ] && H=(--hooks games/acnh/hooks.txt)  # instructions that call the runtime first (games/acnh/game.cpp)
+  if [ ! -f "$G/gen/$m/table.cpp" ] || [ "recomp/emit.py" -nt "$G/gen/$m/table.cpp" ] || force recomp ||
+     { [ "$m" = main ] && [ games/acnh/hooks.txt -nt "$G/gen/$m/table.cpp" ]; }; then
+    "$PY" -m recomp "$G/exefs/$m" "$G/gen/$m" --name "$m" --base "$b" --jobs "$JOBS" ${H[@]+"${H[@]}"} > "$G/logs/recomp_$m.log" 2>&1
   fi
   tail -1 "$G/logs/recomp_$m.log"
 }
@@ -186,7 +198,7 @@ if [ ! -f "$G/fonts/glyphs_xbox/nintendo/romfs/Font/ScalableFont.sarc.zs" ] || f
 fi
 
 # ---- build ----------------------------------------------------------------------------------------------------
-say "build (-j$JOBS; the first build takes 40-90 minutes)"
+say "build (-j$JOBS; the first build compiles ~5 CPU-hours of code, about $(( 300 / JOBS + 10 )) minutes here)"
 EXTRA=()
 [ -n "$OUT" ] && EXTRA+=(-DNX_GEN_DIR="$G/gen")  # the default build reads private/acnh/gen
 [ "$(uname)" = Darwin ] && EXTRA+=(-DCMAKE_PREFIX_PATH="$(brew --prefix 2>/dev/null || echo /opt/homebrew)")

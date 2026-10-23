@@ -119,6 +119,50 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 31. **Inicializador** (`launcher/`, `acnhrecomp_launcher`): programa sem código do jogo que pede chaves, jogo,
     atualização e DLC, confere os arquivos e roda a recompilação no próprio computador (`setup_acnh.sh --out`), ou
     abre uma versão já recompilada. Mesmo visual e idiomas da tela de configurações.
+32. **Mar desenhado por cima do píer, do jogador e da praça** (quadros isolados na ilha): o "clear on bind" mantido
+    uma vez por quadro (item 27) decidia o quadro pelo `g_frame` da thread que apresenta, mas o jogo grava os passes
+    nas threads de render. Com rastreio, ~260 limpezas de profundidade "primeiras do quadro" vinham 0,2-9 ms depois de
+    outra do mesmo alvo: o re-bind do passe da água caía logo depois da apresentação, apagava a profundidade e o mar
+    (translúcido) cobria tudo. Agora a limpeza é gravada marcada (`kClearOnce`) e decidida no replay, onde o quadro é
+    o número de apresentações na ordem da fila (`nvn_cmd.cpp`, `nvn_clears.cpp`). A cena da Nook Inc. continua certa.
+
+## Teste de jogo roteirizado (23/10/2026)
+
+Roteiros em `private/play/` (`gen.py` gera o `NX_INPUT` de uma linguagem simples: `include`, `press`, `walk` com
+analógico e corrida, `wait`; `run.sh` roda numa raiz de dados isolada, com despejo de quadros e resumo de fps). O
+`s5_island_menus.txt` faz a introdução inteira, os diálogos da chegada, anda até a praça, abre menus (`X`, `ZL`,
+`Minus`), corre pela ilha (rio, praia, penhascos). `NX_FAST_UNTIL=<quadro>` apresenta a 60 fps até aquele quadro (a
+lógica anda por quadro: a introdução leva metade do tempo; sem limite, as cargas que seguem o relógio levavam
+milhares de quadros e o roteiro se perdia); `NX_INPUT` aceita agora `ZL`/`ZR`.
+
+| Cenário | Resultado |
+|---|---|
+| Introdução (logos, registro, criação do personagem, Nook Inc., filme, voo) | ✅ sem falhas visuais |
+| Chegada no píer, diálogos, moradores (pássaro azul, sapo, coelha...) | ✅ cabeças normais em todos os sorteados que vimos (nenhuma cabeça preta) |
+| Caminhada/corrida: aeroporto, praça (tendas, quadro de avisos), rio, praia, penhascos | ✅ (mar sobre a cena: item 32) |
+| `Minus` no 1º dia | ✅ "You can't save right now." (como no console); `ZL`/`X` sem efeito antes da cerimônia |
+| Crashes | 1 em ~12 execuções, no carregamento da cena da Nook Inc. (abaixo) |
+| Shaders sem `.spv`, hitches (`NX_HITCH_LINES`) | 0 em todas as execuções |
+
+fps: a máquina estava dividida com outros processos do jogo e compilações (load 10-19) em todas as execuções, então
+os números absolutos medem a disputa: ilha 8-30 fps, Nook Inc. 13-30 (com a GPU livre, `rc_island.log`: 30 fps
+estáveis em tudo, replay da ilha 15-20 ms por quadro, a maior parte dos 33 ms).
+
+Em aberto:
+- ~~Crash intermitente (sinal 11, endereço 8) em `main+6d6514`~~ **corrigido**: os workers de jobs (`main+6d6514`,
+  calc_ da thread feita pela fábrica `main+6c5b20`) registram-se no Havok se o singleton Phive (`main+5a05378`)
+  existe, mas a thread principal publica o singleton (`main+3dfc120`) antes de montar o sistema em `g+8`
+  (`main+3dfc2a8`, ~3 ms: PhiveSystemHeap de 32 MB). Um worker acordado tarde (wakeup do job queue em
+  `main+3e42c08` atendido com atraso pelo host carregado) caía nessa janela. Gancho em `main+6d659c`
+  (`games/acnh/game.cpp`): singleton pela metade conta como ausente, o registro fica para a próxima mensagem.
+  Reproduzido de forma determinística segurando a thread principal 300 ms no `g->init` (gdb): sem o gancho, crash;
+  com ele, a linha `acnh: a job worker woke while the Phive singleton is half built` e o jogo segue.
+- Câmera de diálogo no píer (Tank, quadro 12420 a 60 fps): uma lâmina preta curva perto da câmera, provavelmente a
+  porta/bandeira do aeroporto vista de trás. A confirmar com `NX_TRACE_DRAWS`.
+- Um quadro com o chão marrom sem textura e só os contornos da grama (12720, ao sair da praça): transição de câmera
+  ou textura ainda não carregada.
+- Não chegamos à tenda, ao Resident Services nem à noite do 1º dia: o jogo só grava o save ao dormir, então cada
+  teste refaz a introdução (~6 min com a GPU livre) e o limite de 8 min por execução acaba antes.
 
 ## Próximos passos (pedidos)
 
@@ -126,9 +170,35 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
   a 60 apresentações por segundo, `NX_PRESENT_INTERVAL=1`), então só apresentar a 60 deixa o jogo 2x mais rápido. Um
   60 fps de verdade exige achar e reduzir à metade o passo de cada sistema que conta quadros (não há uma constante
   única: o `cFrameRate` do binário é só o fim da string `MusicBeatSyncFrameRate`).
-- **Janela adaptável / resolução nativa**: hoje o quadro 1920x1080 é escalado para a janela. Renderizar no tamanho
-  da janela exige redimensionar os alvos de render do motor (o framework já faz isso para o Wonder em
-  `nvn_ultrawide.cpp`).
+  Investigado de novo (3.0.2): o jogo nunca muda o intervalo de apresentação (fica o 2 do
+  `NVNwindowBuilder`; nenhum log registra troca), então não há um "passo" do framework para seguir, como o `fw[0x260]` do Wonder. O tempo
+  em segundos aparece só como constantes 1/30 embutidas no código (`mov`/`movk 0x3d088889`: 21 lugares, por exemplo
+  `main+16548e4`, `main+14b9d5c`, `main+2ef7fd0`; 1/60 em 7), e os parâmetros de dados contam quadros
+  (`ActionFrame`, `DelayMaxFrame`, `EmoticonActionAutoEndFrame`...). Os códigos de 60 fps da comunidade só trocam o
+  intervalo e deixam o jogo 2x mais rápido; o FPSLocker-Warehouse marca o 3.0.3 como "sem patch" (velocidade,
+  física e UI presas ao fps). Medição (mesma entrada, quadros despejados a cada 150): o carregamento segue o relógio
+  (a cena da Nook Inc. começa ~900 quadros depois a 60), mas dali em diante cada imagem a 30 fps reaparece a 60 fps
+  com o mesmo deslocamento fixo de quadros (1200→1350, 1500→1650, 1800→1950, 2100→2250, 2400→2550): a lógica é
+  por quadro (só a hora do dia segue o relógio, pelo `nn::time`). Caminho viável para 60 na tela: geração de quadros (`video.frame_gen`).
+  O caminho de verdade (lógica a 60 Hz com metade do passo por sistema, `video.frame_rate = 60native`) está em
+  [NATIVE60.md](NATIVE60.md): UI, efeitos, física e animação dos personagens já andam certo; texto e movimento ainda não.
+  **Feito: geração de quadros embutida** (`video.frame_gen = builtin`, `NX_FRAMEGEN=1`; `nvn_framegen.cpp`, shaders em
+  `tools/shaders/framegen`). O jogo segue a 30 (intervalo 2, velocidade normal) e, quando o quadro real N chega, um
+  quadro intermediário entre N-1 e N é feito na GPU e apresentado na hora; N vai meio quadro depois (16,7 ms; o
+  replay espera sem a trava da GPU). Movimento por casamento simétrico de blocos (o vetor do próprio quadro do meio,
+  sem buracos) sobre a luma em 1/32, 1/8 e 1/4, um vetor por 16x16 px, mediana 3x3; por pixel, o melhor de alguns
+  vetores vizinhos, e pixels que não mudaram (HUD) são copiados como estão. Custo medido com timestamps no Intel
+  Iris Xe, 1080p: ~1,2-1,8 ms por quadro gerado sem outra carga na GPU (luma 0,15-0,25, movimento 0,5, quadro 0,6-0,9;
+  o máximo com a tela toda em movimento).
+  Janela: 86% das apresentações entre 14 e 19 ms com o jogo a 30. Sem geração (mostra só os quadros reais) abaixo de
+  20 fps, com `NX_PRESENT_INTERVAL=1`, ou se a textura da janela anterior foi reaproveitada.
+- **Janela adaptável / resolução nativa** (feito, `nvn_ultrawide.cpp`): os alvos de render do tamanho da tela
+  (cadeias 1920x1080 e 1280x720) são refeitos na resolução interna (`video.resolution`, 540p a 2160p ou a da
+  janela) e na proporção (`video.aspect`, ou a da janela), ao vivo. As câmeras são as `sead::PerspectiveProjection`
+  do jogo (vtable `main+0x4a65608`), ajustadas por um gancho de instrução no `doUpdateMatrix` (`main+37e5958`):
+  aspecto mais largo (Hor+) ou campo vertical maior (Vert+). A UI fica em 16:9 no
+  meio; telas de menu de fundo cheio ganham faixas laterais (ou em cima e embaixo). Falta: ancorar a HUD nas bordas
+  (a raiz do layout `nn::ui2d`).
 - **Hardware fraco**: perfil (perf) da cena 3D: o reverb I3DL2 do áudio, renderizado na CPU (no console é o DSP),
   era a função mais cara do processo (~20% das amostras, um núcleo inteiro). `NX_AUDIO_REVERB=0` (presets `intel`,
   `lightest`, `performance`) o desliga: a thread de áudio cai de 26% para 11%. Próximos ganhos: o despacho de
@@ -152,8 +222,11 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | `NX_SKIP_DEPTH_CLEAR_AT=<offset>` / `NX_CLEAR_ONCE_AT=<offsets>` | ignora os clears de profundidade dali / mantém só o primeiro por alvo e quadro |
 | `NX_TRACE_FRAME=<quadro>` | com `NX_TRACE_DRAWS`, só desenhos a partir daquele quadro |
 | `NX_PRESENT_INTERVAL=<n>` | força o intervalo de apresentação (1 = 60 fps) |
+| `NX_NATIVE60=1` / `NX_NATIVE60_TRACE=1` | lógica a 60 Hz nos sistemas já achados ([NATIVE60.md](NATIVE60.md)) / o que cada gancho vê |
+| `NX_FRAMEGEN=1` | geração de quadros embutida (`nvn_framegen.cpp`); com `NX_DUMP_FRAMES`, grava também o quadro gerado (`NNNNN_gen`) e o real anterior (`NNNNN_prev`) |
 | `NX_SNAP_FOLLOW=<hash do fs>@<desenho>` | captura o alvo depois de cada desenho seguinte |
-| `NX_INPUT=quadro:Botão,...` | aperta botões (ou `LUp`/`LDown`/`LLeft`/`LRight`: analógico) em quadros definidos |
+| `NX_INPUT=quadro:Botão,...` | aperta botões (`A`...`ZL`/`ZR`, ou `LUp`/`LDown`/`LLeft`/`LRight`: analógico) em quadros definidos |
+| `NX_FAST_UNTIL=<quadro>` | 60 fps até aquele quadro, o ritmo do jogo depois (introdução de testes em metade do tempo) |
 | `NX_TIME_OFFSET=<segundos>` | desloca o relógio do jogo (viagem no tempo) |
 | `NX_USER_NAME=<nome>` | nome do usuário do sistema (padrão: o do computador) |
 | `NX_MOVIE_TRACE=1` / `NX_MOVIE_STATS=1` | cada chamada ao decodificador do filme / estado dos buffers a cada 2 s |

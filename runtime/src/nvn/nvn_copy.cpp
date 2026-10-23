@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "nvn_pipeline.h"
+#include "nvn_ultrawide.h"
 #include "nvn_draw_state.h"
 #include "nvn_vk.h"
 
@@ -117,6 +118,12 @@ void replay_buffer_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
                 to_buffer ? "<-" : "->", (unsigned long long)texture, why);
     };
     if (!dst) return skip(src ? "no image" : "source not in a pool");
+    if (dst->uw && (dst->sx != 1.0f || dst->sy != 1.0f)) {  // a resized screen target: the guest region is the game's
+        static int logged = 0;
+        if (logged++ < 4)
+            log("nvn: buffer copy %s resized screen target %llx (%ux%u, scale %.3f x %.3f): region not scaled",
+                to_buffer ? "from" : "to", (unsigned long long)texture, dst->width, dst->height, double(dst->sx), double(dst->sy));
+    }
     uint32_t bw = 1, bh = 1, bytes = 0;
     format_block(t->format, bw, bh, bytes);
     uint32_t host = vk_block_bytes(dst->format);
@@ -186,6 +193,16 @@ void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     VkImageSubresourceLayers ds = sub(*dst, dl, info.dst[2], info.dst[5], info.dst_view.min_layer, d3d);
     int32_t sw = std::max(info.src[3], 1), sh = std::max(info.src[4], 1);
     int32_t dw = std::max(info.dst[3], 1), dh = std::max(info.dst[4], 1);
+    // Resized screen targets (nvn_ultrawide.cpp): the guest's regions, scaled to each image (a blit when the two
+    // scales differ).
+    auto scale = [](const GpuImage& img, uint32_t level, int32_t& x, int32_t& y, int32_t& w, int32_t& h) {
+        if (!img.uw || (img.sx == 1.0f && img.sy == 1.0f)) return;
+        uw_span(x, w, std::max(1u, img.width >> level), img.sx);
+        uw_span(y, h, std::max(1u, img.height >> level), img.sy);
+        w = std::max(w, 1), h = std::max(h, 1);
+    };
+    scale(*src, sl, info.src[0], info.src[1], sw, sh);
+    scale(*dst, dl, info.dst[0], info.dst[1], dw, dh);
     if (same) {
         // One subresource and layer range, and the rectangles (and 3D slices) meet: Vulkan forbids it, dropped.
         bool overlap = ss.mipLevel == ds.mipLevel &&

@@ -3,6 +3,7 @@
 // shared inputs. The replay's CPU shortcuts of docs/nvn/PERF-PLAN.md live here and in nvn_draw.cpp; NX_DRAW_SLOW
 // turns them off (draw_slow, nvn_draw_state.h). Everything here runs under the GPU lock, one draw at a time.
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -193,10 +194,28 @@ HandleSlot* handle_slot(uint64_t handle) {
 // only bytes that do not change during the submit may go through it, and the stack copies these were built in did.
 // Here each distinct content gets a block of its own for the submit, found by what it is made from, and dedup keeps
 // one upload of it. The blocks are reused from sets_begin_submit on, where dedup starts over too.
+// Ryujinx's render scales for a draw into or sampling from resized screen targets (nvn_ultrawide.cpp): [0] the
+// target's (gl_FragCoord is divided by it), [1 + n] the stage's n-th texture (texel fetches times it, size queries
+// over it; the vertex stage's after the fragment stage's `frag_count`), negative in the fragment stage when the target
+// has the same scale (the fetch then also takes gl_FragCoord's fraction). All 1 without scaling.
+struct RenderScales {
+    float rt = 1.0f;
+    int32_t frag_count = 0;
+    uint32_t n = 0;
+    uint8_t index[16] = {};
+    float value[16] = {};
+};
 struct SupportBlock {
-    float width = 0, height = 0;  // the key: support_buffer_set_viewport's arguments
+    float width = 0, height = 0;  // the key: support_buffer_set_viewport's arguments, and the render scales
+    RenderScales scales;
     SupportBuffer sb;
 };
+void apply_scales(SupportBuffer& sb, const RenderScales& r) {
+    sb.render_scale[0][0] = r.rt;
+    sb.frag_scale_count[0] = r.frag_count;
+    for (uint32_t k = 0; k < r.n; k++)
+        if (1u + r.index[k] < 73u) sb.render_scale[1 + r.index[k]][0] = r.value[k];
+}
 struct ConstantsBlock {
     int hw = 0;         // the key: the Maxwell stage (vertex 0, fragment 4) and the stage's storage bindings,
     Range storage[16];  // all driver_constants reads outside compute
@@ -207,16 +226,18 @@ std::vector<std::unique_ptr<SupportBlock>> g_support;
 std::vector<std::unique_ptr<ConstantsBlock>> g_constants;
 size_t g_support_used = 0, g_constants_used = 0;
 
-const SupportBuffer* support_block(float width, float height) {
+const SupportBuffer* support_block(float width, float height, const RenderScales& scales) {
     for (size_t k = 0; k < g_support_used; k++)
-        if (std::memcmp(&g_support[k]->width, &width, 4) == 0 && std::memcmp(&g_support[k]->height, &height, 4) == 0)
+        if (std::memcmp(&g_support[k]->width, &width, 4) == 0 && std::memcmp(&g_support[k]->height, &height, 4) == 0 &&
+            std::memcmp(&g_support[k]->scales, &scales, sizeof scales) == 0)
             return &g_support[k]->sb;
     if (g_support_used == kBlocks) return nullptr;
     if (g_support_used == g_support.size()) g_support.push_back(std::make_unique<SupportBlock>());
     SupportBlock& b = *g_support[g_support_used++];
-    b.width = width, b.height = height;
+    b.width = width, b.height = height, b.scales = scales;
     b.sb = support_buffer_defaults();
-    support_buffer_set_viewport(b.sb, width, height);
+    support_buffer_set_viewport(b.sb, width, height, false, scales.rt);
+    apply_scales(b.sb, scales);
     return &b.sb;
 }
 
@@ -423,22 +444,47 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
     buffers.reserve(1024), images.reserve(1024), writes.reserve(2048);  // pointers into them are kept
     float vw = g_state.has_viewport ? float(g_state.viewport[2]) : 1280.0f;
     float vh = g_state.has_viewport ? float(g_state.viewport[3]) : 720.0f;
-    if (g_uw_wide && g_state.has_viewport) {  // NX_ULTRAWIDE: the viewport the shaders see is the widened one
-        int32_t x = g_state.viewport[0], w = g_state.viewport[2];
-        uw_span(x, w, UINT32_MAX);
-        vw = float(w);
+    RenderScales scales;
+    if (g_uw.on && g_state.has_viewport) {  // screen scale: the viewport the shaders see is the scaled one
+        int32_t x = g_state.viewport[0], w = g_state.viewport[2], y = g_state.viewport[1], h = g_state.viewport[3];
+        uw_span(x, w, UINT32_MAX, g_uw.sx);
+        uw_span(y, h, UINT32_MAX, g_uw.sy);
+        vw = float(w), vh = float(h);
+    }
+    if (uw_scaling()) {
+        if (g_uw.on) scales.rt = g_uw.s();
+        const ShaderInfo* fs = nullptr;
+        for (const ShaderInfo* s : shaders)
+            if (s->stage == ShaderStage::Fragment) fs = s;
+        if (fs)
+            for (const DescriptorBinding& b : fs->refl.bindings) scales.frag_count += b.set == 2 || b.set == 3;
+        const DrawTextures& tex = g_textures;
+        for (size_t k = 0; k < tex.bindings.size() && k < tex.resolved.size() && scales.n < 16; k++) {
+            auto [s, b] = tex.bindings[k];
+            GpuImage* img = tex.resolved[k].texture ? image_of(tex.resolved[k].texture) : nullptr;
+            if (!img || !img->uw) continue;
+            float v = std::min(img->sx, img->sy);
+            if (v == 1.0f) continue;
+            uint32_t rank = 0;  // the translator numbers a stage's textures in binding order
+            for (const DescriptorBinding& o : s->refl.bindings) rank += o.set == 2 && o.binding < b->binding;
+            bool frag = s->stage == ShaderStage::Fragment;
+            if (frag && g_uw.on && std::fabs(g_uw.s() - v) < 1e-3f) v = -v;
+            scales.index[scales.n] = uint8_t(std::min<uint32_t>(frag || s->stage == ShaderStage::Compute ? rank : rank + uint32_t(scales.frag_count), 255));
+            scales.value[scales.n++] = v;
+        }
     }
     SupportBuffer sb;  // built when a binding gets a copy of its own
     bool sb_built = false;
     auto support = [&]() -> VkDescriptorBufferInfo {
-        const SupportBuffer* block = shared ? support_block(vw, vh) : nullptr;
+        const SupportBuffer* block = shared ? support_block(vw, vh, scales) : nullptr;
         if (block) {
             Upload u = dedup_upload(reinterpret_cast<const uint8_t*>(block), sizeof sb, sizeof sb, 256);
             return {u.buffer, u.offset, sizeof sb};
         }
         if (!sb_built) {
             sb = support_buffer_defaults();
-            support_buffer_set_viewport(sb, vw, vh);
+            support_buffer_set_viewport(sb, vw, vh, false, scales.rt);
+            apply_scales(sb, scales);
             sb_built = true;
         }
         return buffer_of(cb, &sb, sizeof sb, 16, false, false);

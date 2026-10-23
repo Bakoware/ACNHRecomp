@@ -1,6 +1,6 @@
 """Recompile an NSO module to C++.
 
-Usage: python -m recomp <module.nso> <out dir> --name main --base 0x4000000000 [--only 0xADDR ...]
+Usage: python -m recomp <module.nso> <out dir> --name main --base 0x4000000000 [--jobs N] [--only 0xADDR ...]
 
 Writes (all symbols are prefixed with the module name, so several modules link into one program):
   funcs.h         NXB (the module's load address) and declarations of every recompiled function
@@ -9,8 +9,10 @@ Writes (all symbols are prefixed with the module name, so several modules link i
   report.txt      coverage: unhandled instructions, unresolved indirect branches
 """
 import argparse
+import collections
 import contextlib
 import io
+import multiprocessing
 import os
 import time
 
@@ -46,7 +48,10 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--name", default="main")
     ap.add_argument("--base", default="0x4000000000")
+    ap.add_argument("--jobs", type=int, default=0, help="parallel emitters (default: cores, limited by free RAM)")
     ap.add_argument("--only", nargs="*", default=None, help="only these function addresses (debug)")
+    ap.add_argument("--hooks", default=None,
+                    help="file of instruction addresses (hex, one per line, '#' comments) that call nx_hook first")
     args = ap.parse_args()
     base = int(args.base, 0)
     name = args.name
@@ -58,6 +63,10 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     e = emit.Emitter(an, prefix=name)
+    if args.hooks:
+        with open(args.hooks) as hf:
+            e.hooks = {int(ln.split("#")[0], 16) for ln in hf if ln.split("#")[0].strip()}
+        print(f"  {len(e.hooks)} hooks from {args.hooks}")
     funcs = an.functions
     if args.only:
         want = {int(x, 16) for x in args.only}
@@ -70,21 +79,35 @@ def main():
         for f in an.functions:
             h.write(f"void {e.fn(f.start)}(nx::CPU& c);\n")
 
-    files = []
-    cur, cur_n = [], 0
+    # Translation units: consecutive functions up to INSNS_PER_FILE instructions each, the same split whatever the
+    # number of jobs, so a rerun rewrites only the files whose code changed.
+    chunks, first, n = [], 0, 0
     for k, f in enumerate(funcs):
-        cur.append(e.function(f))
-        cur_n += (f.end - f.start) // 4
-        if cur_n >= INSNS_PER_FILE or k == len(funcs) - 1:
-            fname = f"code_{len(files):03d}.cpp"
-            with open_if_changed(os.path.join(args.out, fname)) as out:
-                out.write('#include "funcs.h"\n\n')
-                out.write("\n\n".join(cur))
-                out.write("\n")
-            files.append(fname)
-            cur, cur_n = [], 0
-        if k % 4000 == 0:
-            print(f"  emitted {k}/{len(funcs)} functions ({time.time() - t:.0f}s)")
+        n += (f.end - f.start) // 4
+        if n >= INSNS_PER_FILE or k == len(funcs) - 1:
+            chunks.append((len(chunks), first, k + 1))
+            first, n = k + 1, 0
+    files = [f"code_{i:03d}.cpp" for i, _, _ in chunks]
+    global _job
+    _job = (e, funcs, args.out)
+    jobs = max(1, min(args.jobs or default_jobs(), len(chunks)))
+    print(f"  emitting {len(funcs)} functions into {len(chunks)} files with {jobs} jobs")
+    done = 0
+    if jobs == 1:
+        results = map(_emit_chunk, chunks)
+    else:
+        # Forked workers share the analysis (copy-on-write) instead of each redoing it.
+        pool = multiprocessing.get_context("fork").Pool(jobs)
+        results = pool.imap_unordered(_emit_chunk, chunks)
+    for handled, unhandled, count in results:
+        e.handled += handled
+        e.unhandled.update(unhandled)
+        done += count
+        if done // 8000 != (done - count) // 8000:
+            print(f"  emitted {done}/{len(funcs)} functions ({time.time() - t:.0f}s)", flush=True)
+    if jobs > 1:
+        pool.close()
+        pool.join()
 
     write_table(os.path.join(args.out, "table.cpp"), m, an, e, name, base)
 
@@ -100,6 +123,35 @@ def main():
 
 
 REF_BASE = 0x4000000000  # where --base addresses are measured from (NX_BASE of the reference layout)
+
+_job = None  # (emitter, functions, out dir), set before the workers fork
+
+
+def _emit_chunk(chunk):
+    """One translation unit: returns its counts, the emitter's totals are summed by the parent."""
+    i, lo, hi = chunk
+    e, funcs, out_dir = _job
+    e.handled, e.unhandled = 0, collections.Counter()
+    code = [e.function(f) for f in funcs[lo:hi]]
+    with open_if_changed(os.path.join(out_dir, f"code_{i:03d}.cpp")) as out:
+        out.write('#include "funcs.h"\n\n')
+        out.write("\n\n".join(code))
+        out.write("\n")
+    return e.handled, e.unhandled, hi - lo
+
+
+def default_jobs():
+    """One job per core, as many as the free memory allows (a worker grows to about 300 MB)."""
+    cores = os.cpu_count() or 1
+    try:
+        with open("/proc/meminfo") as f:
+            avail = next(int(l.split()[1]) for l in f if l.startswith("MemAvailable:")) // 1024
+    except (OSError, StopIteration):
+        try:  # macOS
+            avail = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1 << 20) // 2
+        except (ValueError, OSError):
+            return 1
+    return max(1, min(cores, (avail - 1000) // 300))
 
 
 def write_table(path, m, an, e, name, base):

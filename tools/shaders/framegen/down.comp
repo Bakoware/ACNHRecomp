@@ -1,0 +1,14 @@
+#version 450
+// Frame generation: luma level 4 (32x32 box) from level 3.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 4, r16f) uniform writeonly image2D dst;
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(q, imageSize(dst)))) return;
+    ivec2 last = textureSize(src, 0) - 1;
+    float v = 0.25 * (texelFetch(src, min(2 * q, last), 0).r + texelFetch(src, min(2 * q + ivec2(1, 0), last), 0).r +
+                      texelFetch(src, min(2 * q + ivec2(0, 1), last), 0).r + texelFetch(src, min(2 * q + ivec2(1, 1), last), 0).r);
+    imageStore(dst, q, vec4(v));
+}

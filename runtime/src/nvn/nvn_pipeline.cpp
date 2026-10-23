@@ -86,23 +86,24 @@ VkShaderStageFlags stage_bit(ShaderStage s) {
 
 // `kinds`: per vertex input location, 0 float or the integer kind of its attribute format (vertex_int_kind).
 // `unwritten`: fragment input locations the vertex stage does not write (default_unwritten_inputs).
-VkShaderModule module_of(const ShaderInfo* s, const uint8_t* kinds = nullptr, uint32_t unwritten = 0) {
-    static std::map<std::tuple<const ShaderInfo*, std::string, uint32_t>, VkShaderModule> cache;
+// `scaled`: the vertex module with the screen scale's specialization constants (gl_Position.xy).
+VkShaderModule module_of(const ShaderInfo* s, const uint8_t* kinds = nullptr, uint32_t unwritten = 0, bool scaled = false) {
+    static std::map<std::tuple<const ShaderInfo*, std::string, uint32_t, bool>, VkShaderModule> cache;
     // The integer-vertex-input patch (skinned models' bone indices; without it Metal refuses every character's
     // pipeline, DEBUG.md #25/#26). NX_INT_ATTRIBS=0 turns it off.
     static const char* int_env = std::getenv("NX_INT_ATTRIBS");
     static const bool off = int_env && int_env[0] == '0';
     std::string k = kinds && !off ? std::string(reinterpret_cast<const char*>(kinds), 16) : std::string(16, '\0');
-    auto& m = cache[{s, k, unwritten}];
+    auto& m = cache[{s, k, unwritten, scaled}];
     if (!m) {
         const uint64_t module_t0 = plat::monotonic_ns();
         bool is_patched = false;
         const uint8_t* int_kinds = k != std::string(16, '\0') ? reinterpret_cast<const uint8_t*>(k.data()) : nullptr;
         std::vector<uint32_t> code = patched_spirv(s, int_kinds, unwritten, &is_patched);
-        if (s->stage == ShaderStage::Vertex && uw_on()) {  // NX_ULTRAWIDE: gl_Position.x * spec constant 0
-            std::vector<uint32_t> scaled;
-            if (patch_x_scale(code, scaled)) code.swap(scaled);
-            else log("nvn/vk: shader %s: ultrawide x scale not patched", s->hash.c_str());
+        if (scaled) {  // screen scale: gl_Position.xy * spec constants 0, 1
+            std::vector<uint32_t> patched;
+            if (patch_x_scale(code, patched)) code.swap(patched);
+            else log("nvn/vk: shader %s: screen scale not patched", s->hash.c_str());
         }
         if (s->stage == ShaderStage::Vertex) clip_z_module(s, code);  // NX_CLIP_Z_PATCH (nvn_spirv_clip.cpp)
         if (const char* opt = std::getenv("NX_SPIRV_OPT"); opt || std::getenv("NX_SPIRV_TOOL")) {  // diagnostic: each module through `spirv-opt <flags>` (NX_SPIRV_OPT) or `<tool> in out` (NX_SPIRV_TOOL) first
@@ -330,7 +331,7 @@ void dyn_init(VkDynamicState (&d)[7]) {
 struct PipeBuild {
     VkPipelineShaderStageCreateInfo stages[2]{};
     VkSpecializationInfo spec_info{};
-    float uw_x_value = 1.0f;
+    float uw_values[2] = {1.0f, 1.0f};  // the screen scale's constants 0 and 1 (vertex stage)
     uint32_t nstages = 0;
     std::vector<VkVertexInputAttributeDescription> attrs;
     std::vector<VkVertexInputBindingDescription> binds;
@@ -737,7 +738,6 @@ std::unique_ptr<PipeBuild> prepare_graphics_pipeline(const PipelineKey& key, con
     std::memcpy(B.color_formats, key.color_formats, sizeof B.color_formats);
     VkPipelineShaderStageCreateInfo(&stages)[2] = B.stages;
     VkSpecializationInfo& spec_info = B.spec_info;
-    float& uw_x_value = B.uw_x_value;
     uint32_t& nstages = B.nstages;
     uint8_t int_kinds[16] = {};
     for (uint32_t a = 0; a < key.attrib_count && a < 16; a++) int_kinds[a] = uint8_t(vertex_int_kind(key.attribs[a].format));
@@ -762,12 +762,13 @@ std::unique_ptr<PipeBuild> prepare_graphics_pipeline(const PipelineKey& key, con
         auto& st = stages[nstages++];
         st.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         st.stage = VkShaderStageFlagBits(stage_bit(s->stage));
-        st.module = module_of(s, s == key.vs ? int_kinds : nullptr, s == key.fs ? unwritten : 0);
+        const bool scaled = s == key.vs && key.uw_x != 0;
+        st.module = module_of(s, s == key.vs ? int_kinds : nullptr, s == key.fs ? unwritten : 0, scaled);
         st.pName = "main";
-        if (s == key.vs && key.uw_x > 0) {  // NX_ULTRAWIDE: constant 0 of the patched vertex module
-            static VkSpecializationMapEntry entry{0, 0, sizeof(float)};
-            spec_info = {1, &entry, sizeof(float), &uw_x_value};
-            uw_x_value = key.uw_x;
+        if (scaled) {  // screen scale: constants 0 and 1 of the patched vertex module (nvn_ultrawide.cpp)
+            static const VkSpecializationMapEntry entries[2] = {{0, 0, sizeof(float)}, {1, sizeof(float), sizeof(float)}};
+            B.uw_values[0] = key.uw_x > 0 ? key.uw_x : 1.0f, B.uw_values[1] = key.uw_x < 0 ? -key.uw_x : 1.0f;
+            spec_info = {2, entries, 2 * sizeof(float), B.uw_values};
             st.pSpecializationInfo = &spec_info;
         }
     }
@@ -1036,6 +1037,16 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
             img->uploaded = true;
             upload = false;
         }
+    }
+    // A resized screen target (nvn_ultrawide.cpp): guest memory holds the game's size, not this one. Cleared.
+    if (upload && img->uw && (img->sx != 1.0f || img->sy != 1.0f)) {
+        static int logged = 0;
+        if (logged++ < 8)
+            log("nvn: screen target %llx (%ux%u, format %#x) not uploaded from guest memory%s", (unsigned long long)texture,
+                t->base_w, t->base_h, t->format, dirty ? " (the CPU wrote it)" : "");
+        clear_image(cb, *img, false);
+        img->uploaded = true;
+        upload = false;
     }
     // A texture already on the GPU that the CPU wrote part of: only those bytes go again (the glyph cache).
     if (upload) upload_texture(cb, *t, *img, img->uploaded && dirty ? dirty_lo : 0, img->uploaded && dirty ? dirty_hi : UINT64_MAX);

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Compile GLSL fragment shaders to SPIR-V C arrays: gen_spirv_inc.py out.inc name=file.frag ... (needs glslc)."""
+"""Compile GLSL shaders to SPIR-V C arrays: gen_spirv_inc.py out.inc name=file.frag|.comp ... (needs glslc; the stage
+follows the extension)."""
 import struct, subprocess, sys, tempfile, os
 
 out = sys.argv[1]
@@ -8,7 +9,8 @@ for spec in sys.argv[2:]:
     name, path = spec.split("=")
     with tempfile.TemporaryDirectory() as d:
         spv = os.path.join(d, "x.spv")
-        subprocess.check_call(["glslc", "-O", "--target-env=vulkan1.0", "-fshader-stage=frag", path, "-o", spv])
+        stage = "comp" if path.endswith(".comp") else "frag"
+        subprocess.check_call(["glslc", "-O", "--target-env=vulkan1.0", "-fshader-stage=" + stage, path, "-o", spv])
         data = open(spv, "rb").read()
     words = struct.unpack("<%dI" % (len(data) // 4), data)
     lines.append("// %s\nconst uint32_t %s[] = {\n" % (path, name))

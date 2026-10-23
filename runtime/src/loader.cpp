@@ -89,6 +89,33 @@ HleFn hle_lookup(const char* name) {
     return it == registry().end() ? nullptr : it->second;
 }
 
+// ---- instruction hooks (recomp --hooks) -------------------------------------------------------------------------
+// Registered at static init, read-only afterwards: the generated code asks for every hooked instruction it runs.
+
+namespace {
+std::unordered_map<uint64_t, HleFn>& hooks() {
+    static std::unordered_map<uint64_t, HleFn> h;
+    return h;
+}
+}  // namespace
+
+HookRegistrar::HookRegistrar(uint64_t offset, HleFn fn) { hooks()[offset] = fn; }
+
+}  // namespace nx
+
+// Called by the generated code (declared there: recomp/emit.py).
+void nx_hook(nx::CPU& c, uint64_t pc) {
+    auto it = nx::hooks().find(pc - nx::kModuleBase);
+    if (it != nx::hooks().end()) [[likely]]
+        it->second(c);
+    else {
+        static std::atomic<int> logged{0};
+        if (logged++ < 8) nx::log("hook at %s compiled in, nothing registered for it", nx::describe(pc).c_str());
+    }
+}
+
+namespace nx {
+
 static void missing_stub(CPU& c) {
     // Name comes from the thunk that dispatched here.
     log("missing import called: %s (lr %s) -> 0", t_missing_name, describe(c.x[30]).c_str());
@@ -153,19 +180,29 @@ std::string describe(uint64_t addr) {
 void backtrace(CPU& c);
 
 // Indirect calls (every blr of the game) look the target up here: the modules' text ranges in a small flat array.
+// Each module's functions are sorted by offset; `block[off / 64]` is the index of the first function at or after
+// that 64-byte block, so a lookup reads one index and one or two entries. A dense pointer per instruction would
+// cost twice the text size in RAM (150 MB for ACNH's main).
 struct FastModule {
     uint64_t base, text_size;
-    const Fn* table;
+    const FuncEntry* funcs;
+    const uint32_t* block;
 };
 FastModule g_fast[4];
 size_t g_fast_count = 0;
+
+Fn fast_lookup(const FastModule& m, uint64_t off) {
+    const FuncEntry* f = m.funcs + m.block[off >> 6];
+    while (f->offset < off) f++;
+    return f->offset == off ? f->fn : nullptr;
+}
 
 void call(CPU& c, uint64_t t) {
     for (size_t k = 0; k < g_fast_count; k++) {
         const FastModule& m = g_fast[k];
         uint64_t off = t - m.base;
         if (off < m.text_size) [[likely]] {
-            Fn fn = m.table[off >> 2];
+            Fn fn = fast_lookup(m, off);
             if (!fn) [[unlikely]] {
                 for (int k = 0; k < 31; k += 4)
                     log("  x%-2d %016llx %016llx %016llx %016llx", k, (unsigned long long)c.x[k],
@@ -210,6 +247,23 @@ uint64_t find_symbol(const char* name) {
     return it == g_exports.end() ? 0 : it->second;
 }
 
+// The lookup index of one module (see FastModule). The entries end with a sentinel past the text, so a scan
+// always stops; the recompiler writes them sorted, anything else is sorted here.
+FastModule fast_module(const ModuleInfo* mi) {
+    auto* funcs = new FuncEntry[mi->func_count + 1];
+    std::copy(mi->funcs, mi->funcs + mi->func_count, funcs);
+    std::sort(funcs, funcs + mi->func_count, [](const FuncEntry& a, const FuncEntry& b) { return a.offset < b.offset; });
+    funcs[mi->func_count] = {~0ull, nullptr};
+    size_t blocks = (mi->text_size + 63) / 64;
+    auto* block = new uint32_t[blocks];
+    size_t k = 0;
+    for (size_t b = 0; b < blocks; b++) {
+        while (k < mi->func_count && funcs[k].offset < b * 64) k++;
+        block[b] = uint32_t(k);
+    }
+    return {mi->base, mi->text_size, funcs, block};
+}
+
 void load_modules(const ModuleInfo* const* mods, size_t count, const std::string& data_dir) {
     // Map every module first so symbols of all of them are known before relocating.
     for (size_t i = 0; i < count; i++) {
@@ -226,10 +280,8 @@ void load_modules(const ModuleInfo* const* mods, size_t count, const std::string
         vm_set(mi->base + mi->ro, mi->ro_size, kMemCode, 1);
         vm_set(mi->base + mi->data, size - mi->data, kMemCodeData, 3);
 
-        LoadedModule lm{mi, mi->base, size, new Fn[mi->text_size / 4]()};
-        for (size_t k = 0; k < mi->func_count; k++) lm.table[mi->funcs[k].offset / 4] = mi->funcs[k].fn;
-        g_modules.push_back(lm);
-        if (g_fast_count < 4) g_fast[g_fast_count++] = {lm.base, mi->text_size, lm.table};
+        g_modules.push_back(LoadedModule{mi, mi->base, size});
+        if (g_fast_count < 4) g_fast[g_fast_count++] = fast_module(mi);
 
         for (size_t k = 0; k < mi->symbol_count; k++) {
             const Symbol& s = mi->symbols[k];

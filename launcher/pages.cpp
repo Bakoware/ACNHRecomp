@@ -1,7 +1,8 @@
 // The launcher's pages (launcher.h), in the settings screen's style (ui/theme.h).
 //
 //   welcome   two ways in: set up from the game files, or pick a build folder made before
-//   files     step 1: keys, base game, update 3.0.2, DLC, the pt-BR translation; each checked when chosen
+//   files     step 1: a card each for the keys, base game, update 3.0.2, DLC and the pt-BR translation: Browse…,
+//             Search (the usual folders, results to pick from) or a file dropped on it; each file checked when chosen
 //   install   step 2: where the build goes, and what this computer has (with the command to install the rest)
 //   build     step 3: tools/setup_acnh.sh running: stages, progress, log, stop; the error state
 //   done      step 4: Play
@@ -60,9 +61,9 @@ struct Item {
     std::string path;
     FileCheck check;
 };
-Item g_keys, g_base, g_update, g_ptbr;
+Item g_keys, g_title_keys, g_base, g_update, g_ptbr;
 std::vector<Item> g_dlc;
-bool g_keys_auto = false;
+bool g_keys_auto = false, g_title_keys_auto = false;  // found next to the other files, not chosen
 std::string g_install;
 std::vector<Prereq> g_prereqs;
 Build g_build;
@@ -70,6 +71,18 @@ const char* g_build_problem = "launcher.reason.none";  // "" when g_build is val
 std::string g_banner;  // an error under the page title (a refused file or folder)
 std::string g_toast;
 double g_toast_until = 0;
+
+// The files page's cards; a file dialog's target is its card (kPickKeys..kPickMod in the same order).
+enum Slot { kSlotKeys, kSlotBase, kSlotUpdate, kSlotDlc, kSlotMod, kSlotCount };
+struct SlotState {
+    bool open = false;         // the search's results shown
+    std::vector<Found> found;  // its results
+    ImVec2 min, max;           // the card on screen in the last frame, for drops
+};
+SlotState g_slot[kSlotCount];
+bool g_dragging = false;  // files dragged over the window: the card under g_drag_pos lights up
+ImVec2 g_drag_pos;
+ImVec2 g_page_min, g_page_max;  // the visible part of the page (it scrolls)
 
 // File dialogs answer on their own time (and maybe on another thread): queued here, applied in the frame.
 enum Target { kPickKeys, kPickBase, kPickUpdate, kPickDlc, kPickMod, kPickInstall, kPickBuild };
@@ -101,6 +114,7 @@ void toast(const std::string& t) {
 void save_files() {
     Ini& s = settings();
     s.set("files.keys", g_keys_auto ? "" : g_keys.path);
+    s.set("files.title_keys", g_title_keys_auto ? "" : g_title_keys.path);
     s.set("files.base", g_base.path);
     s.set("files.update", g_update.path);
     std::string dlc;
@@ -117,10 +131,27 @@ void set_item(Item& it, Kind kind, const std::string& path) {
 }
 
 void refresh_keys_auto() {
-    if (!g_keys.path.empty() && !g_keys_auto) return;
-    std::string k = find_keys({g_base.path, g_update.path});
-    g_keys_auto = !k.empty();
-    set_item(g_keys, Kind::Keys, k);
+    if (g_keys.path.empty() || g_keys_auto) {
+        std::string k = find_keys({g_base.path, g_update.path});
+        g_keys_auto = !k.empty();
+        set_item(g_keys, Kind::Keys, k);
+    }
+    if (g_title_keys.path.empty() || g_title_keys_auto) {  // title.keys next to prod.keys
+        std::string t = title_keys_for(g_keys.path);
+        g_title_keys_auto = !t.empty();
+        set_item(g_title_keys, Kind::TitleKeys, t);
+    }
+}
+
+// The checks again (their texts are translated).
+void recheck_files() {
+    const std::pair<Item*, Kind> items[] = {{&g_keys, Kind::Keys}, {&g_title_keys, Kind::TitleKeys},
+                                            {&g_base, Kind::Base}, {&g_update, Kind::Update}, {&g_ptbr, Kind::Mod}};
+    for (const auto& [it, kind] : items)
+        if (!it->path.empty()) it->check = check_file(kind, it->path);
+    for (Item& d : g_dlc) d.check = check_file(Kind::Dlc, d.path);
+    for (SlotState& s : g_slot)
+        for (Found& f : s.found) f.check = check_file(f.kind, f.path);
 }
 
 void set_build(const std::string& folder, bool remember) {
@@ -145,19 +176,23 @@ void SDLCALL on_picked(void* user, const char* const* list, int) {
 }
 
 void pick(Target t) {
-    static const SDL_DialogFileFilter dumps[] = {{"NSP / XCI", "nsp;xci"}, {"*", "*"}};
+    static const SDL_DialogFileFilter dumps[] = {{"Switch game (NSP, XCI)", "nsp;xci"}, {"*", "*"}};
     static const SDL_DialogFileFilter nsp[] = {{"NSP", "nsp"}, {"*", "*"}};
-    static const SDL_DialogFileFilter keys[] = {{"prod.keys", "keys"}, {"*", "*"}};
-    static const SDL_DialogFileFilter zip[] = {{"ZIP", "zip"}};
-    std::string last = settings().get("files.last_dir");
-    const char* where = last.empty() ? nullptr : last.c_str();
+    static const SDL_DialogFileFilter keys[] = {{"prod.keys, title.keys", "keys;txt"}, {"*", "*"}};
+    static const SDL_DialogFileFilter zip[] = {{"ZIP", "zip"}, {"*", "*"}};
+    // The folder of the last file chosen, else Downloads.
+    static std::string last;
+    last = settings().get("files.last_dir");
+    if (!is_dir(last))
+        if (const char* d = SDL_GetUserFolder(SDL_FOLDER_DOWNLOADS)) last = d;
+    const char* where = is_dir(last) ? last.c_str() : nullptr;
     void* user = reinterpret_cast<void*>(intptr_t(t));
     switch (t) {
-        case kPickKeys: SDL_ShowOpenFileDialog(on_picked, user, g_window, keys, 2, where, false); break;
+        case kPickKeys: SDL_ShowOpenFileDialog(on_picked, user, g_window, keys, 2, where, true); break;
         case kPickBase: SDL_ShowOpenFileDialog(on_picked, user, g_window, dumps, 2, where, false); break;
         case kPickUpdate: SDL_ShowOpenFileDialog(on_picked, user, g_window, nsp, 2, where, false); break;
         case kPickDlc: SDL_ShowOpenFileDialog(on_picked, user, g_window, nsp, 2, where, true); break;
-        case kPickMod: SDL_ShowOpenFileDialog(on_picked, user, g_window, zip, 1, where, false); break;
+        case kPickMod: SDL_ShowOpenFileDialog(on_picked, user, g_window, zip, 2, where, false); break;
         case kPickInstall:
             SDL_ShowOpenFolderDialog(on_picked, user, g_window, is_dir(g_install) ? g_install.c_str() : nullptr, false);
             break;
@@ -171,6 +206,57 @@ void add_dlc(const std::string& path) {
     Item it;
     set_item(it, Kind::Dlc, path);
     g_dlc.push_back(it);
+}
+
+// A file chosen for `kind`, by a dialog, a search result or a drop.
+void use_file(Kind kind, const std::string& path) {
+    switch (kind) {
+        case Kind::Keys: set_item(g_keys, kind, path), g_keys_auto = false; break;
+        case Kind::TitleKeys: set_item(g_title_keys, kind, path), g_title_keys_auto = false; break;
+        case Kind::Base: set_item(g_base, kind, path); break;
+        case Kind::Update: set_item(g_update, kind, path); break;
+        case Kind::Dlc: add_dlc(path); break;
+        case Kind::Mod: set_item(g_ptbr, kind, path); break;
+    }
+    settings().set("files.last_dir", parent_dir(path));
+    refresh_keys_auto();
+    save_files();
+}
+
+// What a file given to a card is: the card's kind (a wrong file then shows why), title.keys on the keys card.
+Kind slot_kind(int slot, const std::string& path) {
+    Kind k;
+    switch (slot) {
+        case kSlotKeys: return classify_file(path, k) && k == Kind::TitleKeys ? Kind::TitleKeys : Kind::Keys;
+        case kSlotBase: return Kind::Base;
+        case kSlotUpdate: return Kind::Update;
+        case kSlotDlc: return Kind::Dlc;
+        default: return Kind::Mod;
+    }
+}
+
+int slot_at(ImVec2 p) {
+    if (g_page != Page::Files) return -1;
+    for (int k = 0; k < kSlotCount; k++) {
+        const SlotState& s = g_slot[k];
+        if (p.x >= s.min.x && p.x < s.max.x && p.y >= s.min.y && p.y < s.max.y) return k;
+    }
+    return -1;
+}
+
+// Search: the files that look right for the card in the usual folders and near the files chosen so far.
+void search(int slot) {
+    std::vector<std::string> near = {settings().get("files.last_dir"), g_keys.path, g_base.path, g_update.path,
+                                     g_ptbr.path};
+    for (const Item& d : g_dlc) near.push_back(d.path);
+    SlotState& s = g_slot[slot];
+    const Kind kinds[] = {Kind::Keys, Kind::Base, Kind::Update, Kind::Dlc, Kind::Mod};
+    s.found = search_files(kinds[slot], near);
+    if (slot == kSlotKeys) {
+        std::vector<Found> t = search_files(Kind::TitleKeys, near);
+        s.found.insert(s.found.end(), t.begin(), t.end());
+    }
+    s.open = true;
 }
 
 void use_build_folder(const std::string& folder) {
@@ -196,19 +282,10 @@ void apply_picks() {
         if (p.paths.empty()) continue;  // cancelled
         const std::string& first = p.paths[0];
         switch (p.target) {
-            case kPickKeys: set_item(g_keys, Kind::Keys, first), g_keys_auto = false; break;
-            case kPickBase: set_item(g_base, Kind::Base, first); break;
-            case kPickUpdate: set_item(g_update, Kind::Update, first); break;
-            case kPickDlc:
-                for (const std::string& d : p.paths) add_dlc(d);
-                break;
-            case kPickMod: set_item(g_ptbr, Kind::Mod, first); break;
             case kPickInstall: g_install = first, g_prereqs = check_prerequisites(g_install); break;
             case kPickBuild: use_build_folder(first); break;
-        }
-        if (p.target <= kPickMod) {
-            settings().set("files.last_dir", parent_dir(first));
-            refresh_keys_auto();
+            default:  // a card: several files for the keys (prod.keys and title.keys) and the DLC
+                for (const std::string& f : p.paths) use_file(slot_kind(p.target, f), f);
         }
         save_files();
     }
@@ -337,10 +414,7 @@ void language_combo(float width) {
                 settings().set("launcher.language", code);
                 settings().save();
                 nx::ui::ui_set_language(code);
-                for (Item* it : {&g_keys, &g_base, &g_update, &g_ptbr})  // their texts are translated
-                    if (!it->path.empty()) it->check = check_file(it == &g_keys ? Kind::Keys : it == &g_base ? Kind::Base
-                                                                  : it == &g_update ? Kind::Update : Kind::Mod, it->path);
-                for (Item& d : g_dlc) d.check = check_file(Kind::Dlc, d.path);
+                recheck_files();
                 if (!g_prereqs.empty()) g_prereqs = check_prerequisites(g_install);
             }
             if (sel) ImGui::SetItemDefaultFocus();
@@ -506,92 +580,250 @@ void footer_welcome() {
 
 // ---- files ----------------------------------------------------------------------------------------------------
 
-// A file row: a coloured circle with the item's icon (its colour is the check's), the name and an explanation, each
-// chosen file with its check, and the choose button at the right (under the text when narrow).
-void item_card(const char* id, int icon, const char* title, const char* desc, bool optional, std::vector<Item*> files,
-               const char* button_label, Target target, const std::function<void(size_t)>& remove) {
-    Status st = Status::Empty;
-    for (Item* f : files) st = std::max(st, f->check.status);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, col4(kPaper));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(20), S(14)));
-    ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
-                      ImGuiWindowFlags_NoScrollbar);
-    ImGui::PopStyleVar();
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(S(10), S(5)));
+// The colour of a check's text.
+ImU32 status_ink(Status s) {
+    return s == Status::Ok ? rgb(70, 140, 60) : s == Status::Warning ? rgb(190, 120, 20) : rgb(190, 80, 80);
+}
+
+// A small rounded label after the last item (on its line when it fits in `room`, else under it).
+void badge(const char* text, ImU32 bg, ImU32 fg, float line_h, float room) {
+    float fs = font_size(g_body) * 0.78f;
+    ImVec2 ts = measure(g_body, fs, text, -1);
+    ImVec2 size(ts.x + S(18), ts.y + S(6));
+    bool same = ImGui::GetItemRectSize().x + S(10) + size.x <= room;
+    if (same) ImGui::SameLine(0, S(10));
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    if (same) p.y += (line_h - size.y) * 0.5f;
+    ImGui::Dummy(ImVec2(size.x, same ? line_h : size.y));
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    float avail = ImGui::GetContentRegionAvail().x;
-    bool narrow = avail < S(600);
-    float bw = button_width(button_label);
-    ImVec2 p0 = ImGui::GetCursorScreenPos();
-    float r = S(24);
-    ImVec2 c(p0.x + r, p0.y + r);
-    dl->AddCircleFilled(c, r, st == Status::Empty ? (optional ? kGrey : kBrown) : status_color(st));
-    theme_icon(dl, icon, c, r * 0.6f, kWhite);
-    if (st != Status::Empty) status_mark(dl, ImVec2(c.x + r * 0.75f, c.y + r * 0.75f), S(9), st);
-    float tx = 2 * r + S(16);
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + tx);
+    dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), bg, size.y * 0.5f);
+    dl->AddText(g_body, fs, ImVec2(p.x + S(9), p.y + S(3)), fg, text);
+}
+
+// A small square button at the right of a row.
+bool row_button(const char* label, float size) {
+    ImGui::PushStyleColor(ImGuiCol_Button, col4(rgb(240, 228, 196)));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+    bool r = ImGui::Button(label, ImVec2(size, size));
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    return r;
+}
+
+// One chosen file in a card, `w` wide: its check's mark and text, its name and folder, and × to clear it. Without
+// a file, a hollow mark and `empty`.
+bool file_row(const char* id, const Item& it, bool auto_found, const char* empty, bool required, float w) {
+    ImGui::PushID(id);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float x0 = ImGui::GetCursorPosX(), r = S(10), lh = ImGui::GetTextLineHeight();
+    const bool has = !it.path.empty();
+    if (has)
+        status_mark(dl, ImVec2(p.x + r, p.y + lh * 0.5f), r, it.check.status);
+    else
+        dl->AddCircle(ImVec2(p.x + r, p.y + lh * 0.5f), r - S(1), required ? kBrown : kGrey, 0, S(2));
+    const float bs = ImGui::GetFrameHeight() * 0.8f;
+    ImGui::SetCursorPosX(x0 + 2 * r + S(10));
     ImGui::BeginGroup();
-    float text_w = narrow ? avail - tx : avail - tx - bw - S(20);
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + text_w);
-    ImGui::TextUnformatted(title);
-    if (optional) {
-        ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, col4(kInkSoft));
-        ImGui::SetWindowFontScale(0.84f);
-        ImGui::TextUnformatted(tr("launcher.optional"));
-        ImGui::SetWindowFontScale(1.0f);
+    ImGui::PushTextWrapPos(x0 + w - (has ? bs + S(10) : 0));
+    if (!has) {
+        text_small(empty, required ? rgb(190, 120, 60) : kInkSoft);
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, col4(status_ink(it.check.status)));
+        ImGui::TextWrapped("%s", it.check.text.c_str());
         ImGui::PopStyleColor();
-    }
-    text_small(desc);
-    if (files.empty() || (files.size() == 1 && files[0]->path.empty())) {
-        text_small(tr(optional ? "launcher.status.none" : "launcher.status.missing"),
-                   optional ? kInkSoft : rgb(190, 120, 60));
-    }
-    for (size_t k = 0; k < files.size(); k++) {
-        Item* f = files[k];
-        if (f->path.empty()) continue;
-        ImGui::PushID(int(k));
-        ImGui::PushStyleColor(ImGuiCol_Button, col4(rgb(240, 228, 196)));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(6), S(2)));
-        if (ImGui::SmallButton("×")) remove(k);
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("launcher.remove"));
-        ImGui::SameLine();
-        ImGui::BeginGroup();
-        ImU32 tc = f->check.status == Status::Ok ? rgb(70, 140, 60)
-                 : f->check.status == Status::Warning ? rgb(190, 120, 20) : rgb(190, 80, 80);
-        ImGui::PushStyleColor(ImGuiCol_Text, col4(tc));
-        ImGui::TextWrapped("%s", f->check.text.c_str());
-        ImGui::PopStyleColor();
-        // The file's name after the check when both fit on the line.
-        std::string shown = f == &g_keys && g_keys_auto ? trf("launcher.status.found", file_name(f->path)) : file_name(f->path);
-        float used = ImGui::GetItemRectSize().x + S(14) + ImGui::CalcTextSize(shown.c_str()).x * 0.84f;
-        if (used < text_w - S(40)) ImGui::SameLine(0, S(14));
-        text_small(shown.c_str());
-        ImGui::EndGroup();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f->path.c_str());
-        ImGui::PopID();
+        std::string name = auto_found ? trf("launcher.status.found", file_name(it.path)) : file_name(it.path);
+        text_small((name + "   ·   " + short_dir(it.path)).c_str());
     }
     ImGui::PopTextWrapPos();
     ImGui::EndGroup();
-    float group_h = ImGui::GetItemRectSize().y;
-    if (!narrow) {
-        float y = p0.y + std::max(0.0f, (std::max(group_h, 2 * r) - ImGui::GetFrameHeight()) * 0.5f);
-        ImGui::SetCursorScreenPos(ImVec2(p0.x + avail - bw, y));
-    } else {
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + tx);
+    if (has && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", it.path.c_str());
+    bool cleared = false;
+    if (has) {
+        ImGui::SameLine(x0 + w - bs);
+        cleared = row_button("×", bs);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("launcher.remove"));
     }
-    if (button(button_label, kMint, true, bw)) pick(target);
+    ImGui::PopID();
+    return cleared;
+}
+
+bool chosen(const std::string& path) {
+    for (const Item* it : {&g_keys, &g_title_keys, &g_base, &g_update, &g_ptbr})
+        if (it->path == path) return true;
+    for (const Item& d : g_dlc)
+        if (d.path == path) return true;
+    return false;
+}
+
+// The search's results under a card, `w` wide: name, size and folder, the check, and Use (Add for the DLC).
+void found_list(int slot, float w) {
+    SlotState& s = g_slot[slot];
+    if (!s.open) return;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, col4(rgb(240, 228, 196)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(14), S(10)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(14));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, S(290)));
+    // A few results fit: no scrollbar (an auto-sized child can show one for its first frames).
+    ImGui::BeginChild("##found", ImVec2(w, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
+                      s.found.size() > 3 ? 0 : ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopStyleVar(2);
+    const float iw = ImGui::GetContentRegionAvail().x, x0 = ImGui::GetCursorPosX();
+    const char* hide = tr("launcher.hide");
+    const float hw = ImGui::CalcTextSize(hide).x + S(24);
+    ImGui::PushTextWrapPos(x0 + iw - hw - S(10));
+    ImGui::AlignTextToFramePadding();
+    if (s.found.empty())
+        ImGui::TextWrapped("%s", tr("launcher.search.none"));
+    else
+        ImGui::TextWrapped("%s", trf("launcher.search.found", std::to_string(s.found.size())).c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::SameLine(x0 + iw - hw);
+    if (button(hide, kWhite, true, hw)) s.open = false;
+    const char* use = tr(slot == kSlotDlc ? "launcher.add_one" : "launcher.use");
+    const char* in_use = tr("launcher.in_use");
+    const float uw = std::max(ImGui::CalcTextSize(use).x, ImGui::CalcTextSize(in_use).x) + S(28);
+    for (size_t k = 0; k < s.found.size(); k++) {
+        const Found& f = s.found[k];
+        ImGui::PushID(int(k));
+        ImGui::Separator();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float r = S(9), lh = ImGui::GetTextLineHeight();
+        status_mark(dl, ImVec2(p.x + r, p.y + lh * 0.5f), r, f.check.status);
+        ImGui::SetCursorPosX(x0 + 2 * r + S(10));
+        ImGui::BeginGroup();
+        ImGui::PushTextWrapPos(x0 + iw - uw - S(10));
+        ImGui::TextWrapped("%s", file_name(f.path).c_str());
+        text_small((human_size(f.size) + "   ·   " + short_dir(f.path)).c_str());
+        text_small(f.check.text.c_str(), status_ink(f.check.status));
+        ImGui::PopTextWrapPos();
+        ImGui::EndGroup();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f.path.c_str());
+        ImGui::SameLine(x0 + iw - uw);
+        bool taken = chosen(f.path);
+        if (button(taken ? in_use : use, taken ? kWhite : kMint, !taken, uw)) {
+            use_file(f.kind, f.path);
+            if (slot != kSlotDlc) s.open = false;
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+}
+
+struct FileCard {
+    const char* id;
+    int slot;
+    int icon;
+    const char* title;
+    const char* desc;
+    bool required;
+};
+
+// A card of the files page: its icon (coloured by its files' checks), title, Required or Optional and what it is,
+// with Search and Browse… at the right (under the files when narrow); then `rows` draws its files at the given
+// width, and the search's results follow. A file dropped on the card goes to it.
+void file_card(const FileCard& c, Status st, const std::function<void(float)>& rows) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, col4(kPaper));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(g_portrait ? 14 : 20), S(16)));
+    ImGui::BeginChild(c.id, ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding,
+                      ImGuiWindowFlags_NoScrollbar);
+    ImGui::PopStyleVar();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(S(10), S(6)));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float avail = ImGui::GetContentRegionAvail().x, sp = ImGui::GetStyle().ItemSpacing.x;
+    const char* search_l = tr("launcher.search");
+    const char* browse_l = tr("launcher.browse");
+    const float sw = button_width(search_l), bw = button_width(browse_l), btns = sw + sp + bw;
+    const bool narrow = avail < btns + S(380);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float x0 = ImGui::GetCursorPosX(), r = S(g_portrait ? 20 : 24);
+    // The icon, coloured by the checks, with their mark.
+    ImVec2 ic(p0.x + r, p0.y + r);
+    dl->AddCircleFilled(ic, r, st == Status::Empty ? (c.required ? kBrown : kGrey) : status_color(st));
+    theme_icon(dl, c.icon, ic, r * 0.6f, kWhite);
+    if (st != Status::Empty) status_mark(dl, ImVec2(ic.x + r * 0.75f, ic.y + r * 0.75f), S(9), st);
+    // Title, Required/Optional, what it is.
+    const float tx = 2 * r + S(14), text_w = narrow ? avail - tx : avail - tx - btns - S(20);
+    ImGui::SetCursorPosX(x0 + tx);
+    ImGui::BeginGroup();
+    ImGui::PushTextWrapPos(x0 + tx + text_w);
+    ImGui::PushFont(g_title);
+    ImGui::SetWindowFontScale(0.72f);
+    ImGui::TextWrapped("%s", c.title);
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+    const float title_h = ImGui::GetItemRectSize().y;
+    if (c.required)
+        badge(tr("launcher.badge.required"), rgb(252, 226, 176), rgb(170, 100, 20), title_h, text_w);
+    else
+        badge(tr("launcher.badge.optional"), rgb(234, 224, 198), kInkSoft, title_h, text_w);
+    text_small(c.desc);
+    ImGui::PopTextWrapPos();
+    ImGui::EndGroup();
+    const float head_h = std::max(ImGui::GetItemRectSize().y, 2 * r);
+    bool do_search = false, do_browse = false;
+    if (!narrow) {
+        ImGui::SetCursorScreenPos(ImVec2(p0.x + avail - btns, p0.y + std::max(0.0f, r - ImGui::GetFrameHeight() * 0.5f)));
+        do_search = button(search_l, kWhite, true, sw);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("launcher.search.where"));
+        ImGui::SameLine();
+        do_browse = button(browse_l, kMint, true, bw);
+    }
+    // The files, under the title (from the card's edge on a phone).
+    ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + head_h + S(10)));
+    const float indent = avail > S(460) ? tx : 0, rw = avail - indent;
+    if (indent > 0) ImGui::Indent(indent);
+    rows(rw);
+    if (narrow) {
+        ImGui::Dummy(ImVec2(0, S(2)));
+        float half = (rw - sp) * 0.5f;
+        do_search = button(search_l, kWhite, true, half);
+        ImGui::SameLine();
+        do_browse = button(browse_l, kMint, true, half);
+    }
+    if (g_slot[c.slot].open) {
+        ImGui::Dummy(ImVec2(0, S(2)));
+        found_list(c.slot, rw);
+    }
+    if (indent > 0) ImGui::Unindent(indent);
+    if (do_search) search(c.slot);
+    if (do_browse) pick(Target(c.slot));
+    // Where it is for drops (only its visible part), lit while files are dragged over it.
+    SlotState& s = g_slot[c.slot];
+    ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    s.min = ImVec2(std::max(wp.x, g_page_min.x), std::max(wp.y, g_page_min.y));
+    s.max = ImVec2(std::min(wp.x + ws.x, g_page_max.x), std::min(wp.y + ws.y, g_page_max.y));
+    if (g_dragging && slot_at(g_drag_pos) == c.slot) {
+        ImGui::PushClipRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), false);
+        dl->AddRectFilled(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), rgb(255, 240, 196, 200), ImGui::GetStyle().ChildRounding);
+        dl->AddRect(ImVec2(wp.x + S(1.5f), wp.y + S(1.5f)), ImVec2(wp.x + ws.x - S(1.5f), wp.y + ws.y - S(1.5f)), kOrange,
+                    ImGui::GetStyle().ChildRounding, 0, S(3));
+        const char* drop = tr("launcher.drop_here");
+        ImVec2 ts = ImGui::CalcTextSize(drop);
+        ImVec2 bs(ts.x + S(36), ts.y + S(14));
+        ImVec2 bp(wp.x + (ws.x - bs.x) * 0.5f, wp.y + (ws.y - bs.y) * 0.5f);
+        dl->AddRectFilled(bp, ImVec2(bp.x + bs.x, bp.y + bs.y), kOrange, bs.y * 0.5f);
+        dl->AddText(ImVec2(bp.x + S(18), bp.y + S(7)), kWhite, drop);
+        ImGui::PopClipRect();
+    }
     ImGui::PopStyleVar();
     ImGui::EndChild();
     ImGui::PopStyleColor();
 }
 
+Status combined(std::initializer_list<const Item*> items) {
+    Status st = Status::Empty;
+    for (const Item* it : items) st = std::max(st, it->check.status);
+    return st;
+}
+
 bool files_ready() {
     for (const Item* it : {&g_keys, &g_base, &g_update})
         if (it->path.empty() || it->check.status == Status::Error) return false;
-    if (!g_ptbr.path.empty() && g_ptbr.check.status == Status::Error) return false;
+    for (const Item* it : {&g_title_keys, &g_ptbr})
+        if (!it->path.empty() && it->check.status == Status::Error) return false;
     for (const Item& d : g_dlc)
         if (d.check.status == Status::Error) return false;
     return true;
@@ -600,41 +832,61 @@ bool files_ready() {
 void page_files() {
     steps(0);
     heading(tr("launcher.files.title"), tr("launcher.files.text"));
-    auto label = [](const Item& it) { return tr(it.path.empty() ? "launcher.choose" : "launcher.change"); };
-    auto clear = [](Item& it, bool keys) {
-        return [&it, keys](size_t) {
-            it = Item();
-            if (keys) g_keys_auto = false;
-            save_files();
-        };
-    };
-    item_card("##keys", nx::ui::kIconKey, tr("launcher.item.keys"), tr("launcher.item.keys.desc"), false, {&g_keys},
-              label(g_keys), kPickKeys, clear(g_keys, true));
-    item_card("##base", nx::ui::kIconLeaf, tr("launcher.item.base"), tr("launcher.item.base.desc"), false, {&g_base},
-              label(g_base), kPickBase, clear(g_base, false));
-    item_card("##update", nx::ui::kIconHouse, tr("launcher.item.update"), tr("launcher.item.update.desc"), false,
-              {&g_update}, label(g_update), kPickUpdate, clear(g_update, false));
-    std::vector<Item*> dlc;
-    for (Item& d : g_dlc) dlc.push_back(&d);
-    item_card("##dlc", nx::ui::kIconBox, tr("launcher.item.dlc"), tr("launcher.item.dlc.desc"), true, dlc,
-              tr("launcher.add"), kPickDlc, [](size_t k) {
-                  g_dlc.erase(g_dlc.begin() + long(k));
-                  save_files();
+    g_page_min = ImGui::GetWindowPos();
+    g_page_max = ImVec2(g_page_min.x + ImGui::GetWindowSize().x, g_page_min.y + ImGui::GetWindowSize().y);
+    const char* missing = tr("launcher.status.missing_drop");
+    file_card({"##keys", kSlotKeys, nx::ui::kIconKey, tr("launcher.item.keys"), tr("launcher.item.keys.desc"), true},
+              combined({&g_keys, &g_title_keys}), [&](float w) {
+                  if (file_row("prod", g_keys, g_keys_auto, missing, true, w)) {
+                      g_keys = Item(), g_keys_auto = false;
+                      save_files();
+                  }
+                  if (file_row("title", g_title_keys, g_title_keys_auto, tr("launcher.status.title_keys_none"), false, w)) {
+                      g_title_keys = Item(), g_title_keys_auto = false;
+                      save_files();
+                  }
               });
-    item_card("##ptbr", nx::ui::kIconText, tr("launcher.item.ptbr"), tr("launcher.item.ptbr.desc"), true, {&g_ptbr},
-              label(g_ptbr), kPickMod, clear(g_ptbr, false));
+    auto single = [&](const char* id, int slot, int icon, const char* title, const char* desc, bool required, Item& it) {
+        file_card({id, slot, icon, title, desc, required}, combined({&it}), [&](float w) {
+            if (file_row("file", it, false, required ? missing : tr("launcher.status.none_drop"), required, w)) {
+                it = Item();
+                save_files();
+            }
+        });
+    };
+    single("##base", kSlotBase, nx::ui::kIconLeaf, tr("launcher.item.base"), tr("launcher.item.base.desc"), true, g_base);
+    single("##update", kSlotUpdate, nx::ui::kIconHouse, tr("launcher.item.update"), tr("launcher.item.update.desc"), true,
+           g_update);
+    Status dlc_st = Status::Empty;
+    for (const Item& d : g_dlc) dlc_st = std::max(dlc_st, d.check.status);
+    file_card({"##dlc", kSlotDlc, nx::ui::kIconBox, tr("launcher.item.dlc"), tr("launcher.item.dlc.desc"), false}, dlc_st,
+              [&](float w) {
+                  if (g_dlc.empty()) file_row("none", Item(), false, tr("launcher.status.dlc_none"), false, w);
+                  size_t remove = g_dlc.size();
+                  for (size_t k = 0; k < g_dlc.size(); k++)
+                      if (file_row(std::to_string(k).c_str(), g_dlc[k], false, "", false, w)) remove = k;
+                  if (remove < g_dlc.size()) {
+                      g_dlc.erase(g_dlc.begin() + long(remove));
+                      save_files();
+                  }
+              });
+    single("##ptbr", kSlotMod, nx::ui::kIconText, tr("launcher.item.ptbr"), tr("launcher.item.ptbr.desc"), false, g_ptbr);
 }
 
 void footer_files() {
     if (button(tr("common.back"), kWhite)) g_banner.clear(), g_page = Page::Welcome;
     bool ready = files_ready();
-    if (!ready) {
-        bool chosen = !g_keys.path.empty() && !g_base.path.empty() && !g_update.path.empty();
+    if (!ready) {  // why Next is off, when it fits beside it (the cards show it too)
+        bool all = !g_keys.path.empty() && !g_base.path.empty() && !g_update.path.empty();
+        const char* why = tr(all ? "launcher.files.fix_errors" : "launcher.files.missing_required");
         ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::SetWindowFontScale(0.84f);
-        ImGui::TextColored(col4(kInkSoft), "%s", tr(chosen ? "launcher.files.fix_errors" : "launcher.files.missing_required"));
-        ImGui::SetWindowFontScale(1.0f);
+        float room = ImGui::GetContentRegionAvail().x - button_width(tr("launcher.next")) - ImGui::GetStyle().ItemSpacing.x;
+        if (ImGui::CalcTextSize(why).x * 0.84f <= room) {
+            ImGui::AlignTextToFramePadding();
+            ImGui::SetWindowFontScale(0.84f);
+            ImGui::TextColored(col4(kInkSoft), "%s", why);
+            ImGui::SetWindowFontScale(1.0f);
+        }
     }
     align_right({tr("launcher.next")});
     if (button(tr("launcher.next"), kGreen, ready)) {
@@ -736,7 +988,7 @@ void start_setup(bool rebuild) {
     a.install_dir = rebuild ? g_build.data : g_install;
     auto keep = [](const Item& it) { return is_file(it.path) ? it.path : std::string(); };
     a.keys = keep(g_keys);
-    a.title_keys = title_keys_for(a.keys);
+    a.title_keys = keep(g_title_keys);
     a.base = keep(g_base);
     a.update = keep(g_update);
     for (const Item& d : g_dlc)
@@ -1195,6 +1447,7 @@ void pages_init(SDL_Window* window) {
         if (is_file(path)) set_item(it, kind, path);
     };
     load(g_keys, Kind::Keys, s.get("files.keys"));
+    load(g_title_keys, Kind::TitleKeys, s.get("files.title_keys"));
     load(g_base, Kind::Base, s.get("files.base"));
     load(g_update, Kind::Update, s.get("files.update"));
     load(g_ptbr, Kind::Mod, s.get("files.ptbr"));
@@ -1213,7 +1466,12 @@ void pages_init(SDL_Window* window) {
         load_game_ini();
         g_page = Page::Home;
     }
-    // Tests: a page directly (main.cpp).
+    // Tests: a card's search shown, a page directly (main.cpp).
+    if (const char* q = std::getenv("NX_LAUNCHER_SEARCH")) {
+        const char* names[] = {"keys", "base", "update", "dlc", "ptbr"};
+        for (int k = 0; k < kSlotCount; k++)
+            if (std::strcmp(q, names[k]) == 0) search(k);
+    }
     if (const char* p = std::getenv("NX_LAUNCHER_PAGE")) {
         std::string n = p;
         if (n == "welcome") g_page = Page::Welcome;
@@ -1226,29 +1484,30 @@ void pages_init(SDL_Window* window) {
     }
 }
 
-void pages_drop(const std::string& path) {
+void pages_drop(const std::string& path, float x, float y) {
+    g_dragging = false;
     if (g_page == Page::Build) return;
     if (is_dir(path)) {
         if (g_page == Page::Welcome || g_page == Page::Home) use_build_folder(path);
         return;
     }
+    // On a card it is that card's file; elsewhere it goes where it looks like it belongs.
+    int slot = slot_at(ImVec2(x, y));
     Kind k;
-    if (!classify_file(path, k)) {
+    if (slot >= 0) {
+        k = slot_kind(slot, path);
+    } else if (!classify_file(path, k)) {
         g_banner = trf("launcher.err.drop", file_name(path));
         return;
     }
     g_banner.clear();
-    switch (k) {
-        case Kind::Keys: set_item(g_keys, k, path), g_keys_auto = false; break;
-        case Kind::Base: set_item(g_base, k, path); break;
-        case Kind::Update: set_item(g_update, k, path); break;
-        case Kind::Dlc: add_dlc(path); break;
-        case Kind::Mod: set_item(g_ptbr, k, path); break;
-    }
-    settings().set("files.last_dir", parent_dir(path));
-    refresh_keys_auto();
-    save_files();
+    use_file(k, path);
     if (g_page != Page::Files && setup_supported()) g_page = Page::Files;
+}
+
+void pages_drag(bool over, float x, float y) {
+    g_dragging = over;
+    g_drag_pos = ImVec2(x, y);
 }
 
 void pages_close_requested() {

@@ -1,0 +1,30 @@
+#version 450
+// Frame generation: the vector field's outliers removed. Each cell takes the vector median of its 3x3 neighbourhood
+// (the one closest, in summed distance, to the other eight), which keeps motion edges where a mean would blur them.
+// Cells that found no good match are counted (a scene cut makes most of them so: synth.comp then cross-fades).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D dst;
+layout(set = 0, binding = 5, r32ui) uniform uimage2D unmatched;
+layout(push_constant) uniform P {
+    ivec4 size;
+    vec4 a;  // x: the cost above which a cell has no match, y: the mean luma change above which neither (a cut)
+    vec4 b;
+} p;
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(q, imageSize(dst)))) return;
+    ivec2 last = textureSize(src, 0) - 1;
+    vec4 v[9];
+    for (int k = 0; k < 9; k++) v[k] = texelFetch(src, clamp(q + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), last), 0);
+    int best = 4;
+    float best_d = 1e30;
+    for (int k = 0; k < 9; k++) {
+        float d = 0.0;
+        for (int m = 0; m < 9; m++) d += length(v[k].xy - v[m].xy);
+        if (d < best_d - 1e-3) best_d = d, best = k;
+    }
+    imageStore(dst, q, vec4(v[best].xy, v[4].zw));  // the cell's own cost and luma change
+    if (v[4].z > p.a.x || abs(v[4].w) > p.a.y) imageAtomicAdd(unmatched, ivec2(0), 1u);
+}

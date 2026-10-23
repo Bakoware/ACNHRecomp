@@ -11,12 +11,50 @@
 #include <string>
 
 #include "nvn_draw_state.h"
+#include "platform.h"
 
 namespace nx::nvn::replay {
 
 using namespace nx::vk;
 
 namespace {
+
+// Live control while playing (with the dump_frames and input_live files): a file in the data folder, checked once a
+// second. trace_draws ("<count>"): the next <count> draws are traced as with NX_TRACE_DRAWS, then the file is deleted.
+// skip_fs ("<hash>,<hash>"): draws with those fragment shaders are dropped while the file exists (which shader paints
+// an object on screen, without restarting the game).
+struct LiveDebug {
+    uint64_t trace_left = 0;
+    std::string skip_fs;
+};
+LiveDebug& live_debug() {
+    static LiveDebug d;
+    static uint64_t next_check = 0;
+    uint64_t frame = g_frame.load(std::memory_order_relaxed);
+    if (frame >= next_check) {
+        next_check = frame + 30;
+        std::string root = plat::data_root();
+        if (FILE* f = plat::fopen_utf8(root + "/trace_draws", "rb")) {
+            unsigned long long n = 0;
+            if (std::fscanf(f, "%llu", &n) != 1 || !n) n = 2000;
+            std::fclose(f);
+            std::remove((root + "/trace_draws").c_str());
+            d.trace_left = n;
+            log("trace_draws: the next %llu draws (from draw %llu, frame %llu)", n, (unsigned long long)g_stats.done,
+                (unsigned long long)frame);
+        }
+        std::string skip;
+        if (FILE* f = plat::fopen_utf8(root + "/skip_fs", "rb")) {
+            char b[4096];
+            size_t n = std::fread(b, 1, sizeof b - 1, f);
+            std::fclose(f);
+            skip.assign(b, n);
+        }
+        if (skip != d.skip_fs) log("skip_fs: now '%s'", skip.c_str());
+        d.skip_fs = skip;
+    }
+    return d;
+}
 
 // NX_TRACE_CUBE_DRAWS=<first frame>: the draws into cube and cube-array targets from that frame on (3000 at most),
 // what makes the light probes. A scene start writes the 6 faces of one level at once (6 colour targets). Per sampled
@@ -320,9 +358,11 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
     static const uint64_t trace_count = std::getenv("NX_TRACE_COUNT") ? std::strtoull(std::getenv("NX_TRACE_COUNT"), nullptr, 10) : 80;
     // NX_TRACE_FRAME=<present>: only draws replayed once that many frames were presented.
     static const uint64_t trace_frame = std::getenv("NX_TRACE_FRAME") ? std::strtoull(std::getenv("NX_TRACE_FRAME"), nullptr, 10) : 0;
-    if (trace_env && g_stats.done >= trace_from && traced < trace_count && (!trace_target || t.colors[0] == trace_target) &&
-        g_frame.load(std::memory_order_relaxed) >= trace_frame &&
-        (!fs_env || (fs && std::strstr(fs_env, fs->hash.c_str())))) {  // one hash or a comma list
+    LiveDebug& live = live_debug();
+    if ((trace_env && g_stats.done >= trace_from && traced < trace_count && (!trace_target || t.colors[0] == trace_target) &&
+         g_frame.load(std::memory_order_relaxed) >= trace_frame &&
+         (!fs_env || (fs && std::strstr(fs_env, fs->hash.c_str())))) ||  // one hash or a comma list
+        (live.trace_left && live.trace_left--)) {
         traced++;
         // NX_TRACE_VERTS=1: the first 3 vertices of stream 0 as floats and halves (8 words each at most).
         if (std::getenv("NX_TRACE_VERTS") && !g_state.streams.empty())
@@ -605,7 +645,9 @@ bool debug_shader_overrides(const std::vector<const ShaderInfo*>*& shaders, cons
         }
     // NX_SKIP_FS=<hash>,<hash>: draws with those fragment shaders are dropped (to measure what they cost).
     static const std::string skip = std::getenv("NX_SKIP_FS") ? std::getenv("NX_SKIP_FS") : "";
-    return skip.empty() || !fs || skip.find(fs->hash) == std::string::npos;
+    const std::string& live = live_debug().skip_fs;
+    return !fs || ((skip.empty() || skip.find(fs->hash) == std::string::npos) &&
+                   (live.empty() || live.find(fs->hash) == std::string::npos));
 }
 
 }  // namespace nx::nvn::replay

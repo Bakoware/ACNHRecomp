@@ -32,7 +32,8 @@ struct GpuImage {
     // without swizzle. MoltenVK returned alpha 0 for that view swizzle on a 2D-array view, so all text was invisible.
     bool alpha_from_r = false;
     uint32_t nvn_format = 0;  // the texture's NVN format
-    bool uw = false;          // NX_ULTRAWIDE: a widened render target (nvn_ultrawide.cpp)
+    bool uw = false;          // a scaled screen-sized render target (nvn_ultrawide.cpp)
+    float sx = 1, sy = 1;     // its size over the game's (width / base_w, height / base_h)
 };
 
 VkDevice vk_device();
@@ -48,6 +49,8 @@ uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags want);
 
 // The image behind an NVN texture (guest NVNtexture*), made on first use.
 GpuImage* image_of(uint64_t texture);
+// Presents replayed so far (the replay thread's frames, in queue order with the submits).
+extern uint64_t g_replay_presents;
 // NX_1D_IMAGES=1 (bisecting, nvn_pipeline.cpp): NVN 1D and 1D-array textures as Vulkan 1D images, the old way. By
 // default they are 2D / 2D-array images of height 1, which the translated shaders (1D sampled as 2D) can view (G8).
 bool vk_1d_images();
@@ -60,6 +63,13 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
 void present_pass_release();  // its views of the swapchain images, before the swapchain is destroyed
 bool present_pass_failed();   // the pass could not be made: frames are blitted, upright
 GpuImage* present_pass_test_target();  // NX_PRESENT_TEST: an offscreen "display" for the pass (headless dumps)
+// nvn_framegen.cpp: built-in frame generation (NX_FRAMEGEN=1): an in-between frame for each real one, shown first.
+bool framegen_wanted();
+bool framegen_frame_begin(uint64_t now_ns);  // per real frame: whether to make one this time (the pace allows it)
+uint64_t framegen_real_delay_ns();           // how long after the in-between frame the real one is shown
+// `src` (window texture `texture`) noted as the last frame; with `generate` and the last frame still there, the frame
+// halfway between that one and `src` is made and returned (else null). *prev (optional): the last frame's image.
+GpuImage* framegen_record(VkCommandBuffer cb, uint64_t texture, GpuImage& src, bool generate, GpuImage** prev);
 // nvn_bc.cpp: BC textures decoded on the CPU where the GPU has no textureCompressionBC (NX_FORCE_BC_DECODE=1 anyway).
 bool bc_host_decode(uint32_t nvn_format);         // a BC format this device cannot sample (BC6H excepted)
 VkFormat bc_decoded_format(uint32_t nvn_format);  // what it is stored as instead
@@ -162,13 +172,14 @@ void frame_log(uint64_t frames);  // the mode's counters, with the timing log
 void free_retired_images(uint64_t completed);
 // A GPU-written image of a destroyed texture with the same memory and shape (nvn_frames.cpp), or null.
 std::shared_ptr<GpuImage> reuse_image(const Texture& t);  // images of textures destroyed before submit `completed` + 1
+void retire_image(std::shared_ptr<GpuImage> img);  // freed once no submit can use it (a resized screen target)
 
 // nvn_debug.cpp: NX_DUMP_FRAMES, the presented texture read back (recorded into the present's command buffer, written
 // after its fence).
 uint32_t frame_dump_every();
 bool frame_dump_due(uint64_t presents);  // NX_DUMP_FRAMES, or a dump_frames file in the data folder
 bool frame_dump_record(VkCommandBuffer cb, GpuImage& img);
-void frame_dump_write(const GpuImage& img, uint64_t frame);
+void frame_dump_write(const GpuImage& img, uint64_t frame, const char* suffix = "");  // NNNNN<suffix>.ppm
 bool debug_snapshots_pending();  // NX_SNAP_*: this submit recorded snapshots (it is then waited for)
 
 // nvn_draw.cpp: replays one draw-related command; ends the render pass it may have open when asked.

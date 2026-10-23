@@ -19,6 +19,7 @@
 #include <tuple>
 #include <vector>
 
+#include "nvn_ultrawide.h"
 #include "nvn_vk.h"
 #include "ui/ui.h"
 #include "platform.h"
@@ -585,6 +586,7 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
     for (auto& l : lists) lists_epoch = std::max(lists_epoch, l->epoch);
     ReplayScope replay(lists_epoch);  // the texture mark (#55, #57), then drain_objects (under the GPU lock, #50)
     if (!init()) return;
+    uw_apply();  // a new screen scale starts with a frame (nvn_ultrawide.cpp)
     bool async = async_gpu();
     if (!async) {  // the previous submit was waited for: all of it is free
         free_retired_images(UINT64_MAX);
@@ -657,6 +659,32 @@ void present_headless(uint64_t texture) {
                 }
         }
     }
+    // NX_FRAMEGEN: the in-between frames are made here too (timed), for every frame whatever the pace; a dump also
+    // writes the one before this frame (NNNNN_gen) and the last real frame (NNNNN_prev), next to this one.
+    if (framegen_wanted() && src && src->layout != VK_IMAGE_LAYOUT_UNDEFINED && begin()) {
+        GpuImage* prev = nullptr;
+        GpuImage* gen = framegen_record(g_cb, texture, *src, true, &prev);
+        auto submit = [&](bool wait) {
+            if (async_gpu())
+                frame_submit(VK_NULL_HANDLE, VK_NULL_HANDLE, {}, wait);
+            else
+                end_and_wait(VK_NULL_HANDLE, VK_NULL_HANDLE);
+        };
+        if (due && gen) {
+            transition(g_cb, *gen, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            bool dump = frame_dump_record(g_cb, *gen);
+            submit(dump);
+            if (dump) frame_dump_write(*gen, presents, "_gen");
+            if (prev && begin()) {
+                transition(g_cb, *prev, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                dump = frame_dump_record(g_cb, *prev);
+                submit(dump);
+                if (dump) frame_dump_write(*prev, presents, "_prev");
+            }
+        } else {
+            submit(false);
+        }
+    }
     if (!due && !every) return;
     static uint64_t timed_ns = 0, timed = 0;
     const uint64_t t0 = plat::monotonic_ns();
@@ -687,26 +715,13 @@ void present_headless(uint64_t texture) {
     debug_dump_textures(presents);
 }
 
-void gpu_present(uint64_t texture, const int32_t* crop) {
-    plat::perf_hint_thread();  // the thread that presents takes part in the frame (perf_hint.cpp)
-    std::lock_guard lk(g_gpu);
-    PresentTimer timer;
-    drain_objects();  // under the GPU lock, as in gpu_submit
-    if (!init()) return;
-    if (!async_gpu() || pipelined()) free_retired_images(async_gpu() ? frame_completed() : UINT64_MAX);
-    if (plat::headless()) return present_headless(texture);
-    if (plat::window_minimized()) return;
-    if (plat::window_generation() != g_window_gen) {  // Android: a new window after home or the lock screen
-        if (async_gpu()) frame_wait_all();
-        p_vkDeviceWaitIdle(g_device);
-        present_pass_release();
-        ui::ui_swapchain_changed();
-        if (g_swapchain) p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
-        g_swapchain = VK_NULL_HANDLE;
-        log("nvn/vk: new window: surface and swapchain re-made");
-        if (!make_surface()) return;
-    }
-    if (!g_swapchain && !make_swapchain()) return;
+namespace {
+
+// One image to the swapchain: acquired, `record(cb, real)` (recorded first; returns the image to show, and whether it
+// is one of the game's frames: those are counted and dumped), the present pass or the blit of it, the settings screen,
+// the submit and the present.
+template <class Record>
+void present_image(const int32_t* crop, Record&& record) {
     uint32_t index = 0;
     VkSemaphore acquired = async_gpu() ? frame_acquire_semaphore() : g_acquired;
     VkResult r = p_vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &index);
@@ -715,7 +730,8 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
         return;
     }
     if (!check(r, "vkAcquireNextImageKHR") || !begin()) return;
-    GpuImage* src = image_of(texture);
+    bool real = true;
+    GpuImage* src = record(g_cb, real);
     GpuImage dst;
     dst.image = g_sc_images[index];
     dst.format = g_sc_format;
@@ -738,19 +754,34 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
             crop[1] + crop[3] <= int32_t(src->height))  // nvnWindowSetCrop
             blit.srcOffsets[0] = {crop[0], crop[1], 0}, blit.srcOffsets[1] = {crop[0] + crop[2], crop[1] + crop[3], 1};
         blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.dstOffsets[1] = {int32_t(g_sc_extent.width), int32_t(g_sc_extent.height), 1};
+        // Fit with bars, as the present pass does (nvn_present.cpp): a picture of another shape than the window keeps
+        // its own (a fixed aspect ratio setting, and while the window is being resized).
+        const float cw = float(blit.srcOffsets[1].x - blit.srcOffsets[0].x), ch = float(blit.srcOffsets[1].y - blit.srcOffsets[0].y);
+        const float tw = float(g_sc_extent.width), th = float(g_sc_extent.height), fit = std::min(tw / cw, th / ch);
+        int32_t bw = std::min(int32_t(tw), int32_t(cw * fit + 0.5f)), bh = std::min(int32_t(th), int32_t(ch * fit + 0.5f));
+        int32_t bx = (int32_t(tw) - bw) / 2, by = (int32_t(th) - bh) / 2;
+        blit.dstOffsets[0] = {bx, by, 0};
+        blit.dstOffsets[1] = {bx + bw, by + bh, 1};
+        if (bw < int32_t(tw) || bh < int32_t(th)) {
+            VkClearColorValue black{{0.0f, 0.0f, 0.0f, 1.0f}};
+            VkImageSubresourceRange rr{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            p_vkCmdClearColorImage(g_cb, dst.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rr);
+        }
+        plat::set_picture_box(float(bx) / tw, float(by) / th, float(bw) / tw, float(bh) / th);  // mouse clicks (hle_hid.cpp)
         p_vkCmdBlitImage(g_cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.image,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     }
     if (!drawn) transition(g_cb, dst, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     ui::ui_record(g_cb, dst.image, g_sc_format, g_sc_extent);  // the settings screen over the picture, when open
-    static uint64_t presents = 0;
-    presents++;
-    if (presents % (presents < 300 ? 60 : 300) == 0) draw_log_stats();
-    if (presents % 60 == 0) log_timing(60), gpu_profile_log(60);
-    if (presents % 300 == 0) zero_draws_log();
-    frame_sig_flush(presents);
-    const bool due = frame_dump_due(presents);
+    static uint64_t presents = 0;  // the game's frames (not the generated ones)
+    if (real) {
+        presents++;
+        if (presents % (presents < 300 ? 60 : 300) == 0) draw_log_stats();
+        if (presents % 60 == 0) log_timing(60), gpu_profile_log(60);
+        if (presents % 300 == 0) zero_draws_log();
+        frame_sig_flush(presents);
+    }
+    const bool due = real && frame_dump_due(presents);
     bool dump = src && due;
     if (dump) transition(g_cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);  // the present pass left it sampled
     dump = dump && frame_dump_record(g_cb, *src);
@@ -779,6 +810,57 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
                  (present_pass_wanted() && !present_pass_failed() && caps.currentTransform != g_sc_transform);
     }
     if (remake) make_swapchain();
+}
+
+}  // namespace
+
+uint64_t g_replay_presents = 0;
+
+void gpu_present(uint64_t texture, const int32_t* crop) {
+    plat::perf_hint_thread();  // the thread that presents takes part in the frame (perf_hint.cpp)
+    std::unique_lock lk(g_gpu);
+    g_replay_presents++;
+    PresentTimer timer;
+    drain_objects();  // under the GPU lock, as in gpu_submit
+    if (!init()) return;
+    if (!async_gpu() || pipelined()) free_retired_images(async_gpu() ? frame_completed() : UINT64_MAX);
+    if (plat::headless()) return present_headless(texture);
+    if (plat::window_minimized()) return;
+    if (plat::window_generation() != g_window_gen) {  // Android: a new window after home or the lock screen
+        if (async_gpu()) frame_wait_all();
+        p_vkDeviceWaitIdle(g_device);
+        present_pass_release();
+        ui::ui_swapchain_changed();
+        if (g_swapchain) p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
+        g_swapchain = VK_NULL_HANDLE;
+        log("nvn/vk: new window: surface and swapchain re-made");
+        if (!make_surface()) return;
+    }
+    if (!g_swapchain && !make_swapchain()) return;
+    GpuImage* src = image_of(texture);
+    int32_t src_crop[4];  // the game's crop, on the window texture's size (a resized screen target, nvn_ultrawide.cpp)
+    if (crop && src) uw_crop(*src, crop, src_crop), crop = src_crop;
+    // NX_FRAMEGEN (nvn_framegen.cpp): the frame halfway between the last one and this is shown now, this one half a
+    // game frame later. The GPU lock is let go meanwhile: the game's next frame is replayed after it.
+    if (framegen_wanted() && src && src->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
+        bool generate = framegen_frame_begin(plat::monotonic_ns());
+        GpuImage* gen = nullptr;
+        present_image(crop, [&](VkCommandBuffer cb, bool& real) {
+            gen = framegen_record(cb, texture, *src, generate, nullptr);
+            real = !gen;
+            return gen ? gen : src;
+        });
+        if (!gen) return;
+        uint64_t at = plat::monotonic_ns() + framegen_real_delay_ns(), slept = plat::monotonic_ns();
+        lk.unlock();
+        if (uint64_t now = plat::monotonic_ns(); at > now) plat::sleep_ns(at - now);
+        lk.lock();
+        g_timing.present_ns -= std::min(g_timing.present_ns, plat::monotonic_ns() - slept);
+        if (plat::window_minimized() || !g_swapchain) return;
+        present_image(crop, [&](VkCommandBuffer, bool&) { return src; });  // not replayed into meanwhile (same thread)
+        return;
+    }
+    present_image(crop, [&](VkCommandBuffer, bool&) { return src; });
 }
 
 }  // namespace nx::nvn

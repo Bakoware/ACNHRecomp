@@ -526,7 +526,7 @@ uint32_t unwritten_inputs(const ShaderInfo* vs, const ShaderInfo* fs) {
 }
 
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs) {
-    std::vector<uint32_t> code = s->spirv, next;  // each pass reads `code` and leaves its result in `next`
+    std::vector<uint32_t> code = shader_spirv(s), next;  // each pass reads `code` and leaves its result in `next`
     bool is_int = kinds && patch_int_inputs(code, kinds, next);
     if (is_int) code.swap(next);
     if (int_inputs) *int_inputs = is_int;

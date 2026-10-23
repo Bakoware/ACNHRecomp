@@ -305,7 +305,7 @@ Japanese, Korean, Simplified Chinese and Traditional Chinese.
 | Page | Options |
 |---|---|
 | Game | Game language (automatic from the system, the game's 14 languages, Brazilian Portuguese fan translation); menu language |
-| Video | Windowed / fullscreen, window size, rendering resolution (1080p TV mode or 720p handheld mode), upscaling (bilinear or FSR 1, with sharpness), aspect ratio, frame rate, frame generation (lsfg-vk, if installed), GPU (automatic, dedicated, integrated), prepare shaders at startup |
+| Video | Windowed / fullscreen, window size, game mode (1080p TV mode or 720p handheld mode), internal resolution (540p to 2160p/4K, or the window's), upscaling (bilinear or FSR 1, with sharpness), aspect ratio (16:9, automatic from the window, 16:10, 4:3, 21:9, 32:9, phone ratios; applied live), frame rate, frame generation (built-in, or lsfg-vk if installed), GPU (automatic, dedicated, integrated), prepare shaders at startup |
 | Audio | Master volume, environmental reverb, mute when the window is in the background |
 | Controls | Connected controller, confirm/cancel layout, button icons, vibration, stick dead zone, keyboard remapping |
 | Saves | Open the save folder, back up now, import, export, saves found on this computer, restore backups |
@@ -324,10 +324,11 @@ restart are marked on the screen. Environment variables set on the command line 
 | `video.mode` | `docked`, `handheld` | `NX_HANDHELD` |
 | `video.upscaler` | `linear`, `fsr` | `NX_FSR` |
 | `video.fsr_sharpness_pct` | `0`-`100` | `NX_FSR_SHARP` |
-| `video.aspect` | `16:9`, `auto`, `16:10`, `21:9`, `32:9`, phone ratios | `NX_ULTRAWIDE` |
+| `video.resolution` | `native`, `540`, `720`, `900`, `1080`, `1440`, `2160`, `window` | `NX_RENDER_HEIGHT` |
+| `video.aspect` | `16:9`, `auto`, `16:10`, `4:3`, `21:9`, `32:9`, phone ratios, any `W:H` | `NX_ULTRAWIDE` |
 | `video.gpu` | `auto`, `discrete`, `integrated` | `NX_GPU` |
 | `video.frame_rate` | `30`, `60` | `NX_PRESENT_INTERVAL` |
-| `video.frame_gen` | `off`, `lsfg` | |
+| `video.frame_gen` | `off`, `builtin`, `lsfg` | `NX_FRAMEGEN` (`builtin`) |
 | `video.shader_prepare` | `0`, `1` | |
 | `audio.volume` | `0`-`100` | |
 | `audio.reverb` | `0`, `1` | `NX_AUDIO_REVERB` |
@@ -338,8 +339,11 @@ restart are marked on the screen. Environment variables set on the command line 
 | `input.deadzone` | `5`-`50` (percent) | |
 | `input.key.<action>` | An SDL key name | |
 
-Frame generation requires [lsfg-vk](https://github.com/PancakeTAS/lsfg-vk) and your own copy of Lossless Scaling's
-`Lossless.dll`. Keep the frame rate at 30 fps for now (see [Status](#status)).
+The game's logic runs once per frame, so `video.frame_rate = 60` also makes it run twice as fast (see
+[Status](#status)). For 60 fps on screen at the normal speed, keep the frame rate at 30 and use frame generation:
+`builtin` draws an in-between frame for each of the game's frames on the GPU (motion estimated between the two; about
+1.5 ms on an Intel Iris Xe at 1080p) and shows it half a frame before the real one, which is the added latency. `lsfg`
+uses [lsfg-vk](https://github.com/PancakeTAS/lsfg-vk) instead, with your own copy of Lossless Scaling's `Lossless.dll`.
 
 ## Controls
 

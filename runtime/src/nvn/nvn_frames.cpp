@@ -655,6 +655,12 @@ Texture::~Texture() {
     g_grave.push_back({g_submitted + 1, std::move(image)});
 }
 
+void retire_image(std::shared_ptr<GpuImage> img) {
+    if (!img) return;
+    std::lock_guard lk(g_grave_lock);
+    g_grave.push_back({g_submitted + 1, std::move(img)});
+}
+
 // A host-visible buffer of its own for one big texture upload: the ring is 256 MB, and a scene load with ASTC decoded
 // to RGBA8 staged 312 MB in one submit, wrapping over its own data before the GPU had copied it (DEBUG-2 #72). Freed
 // once the submit being recorded is retired (as images in the grave). Falls back to the ring if allocation fails.

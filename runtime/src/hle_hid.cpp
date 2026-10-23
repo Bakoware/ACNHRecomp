@@ -1,15 +1,18 @@
 // nn::hid at the API level: player 1's Npad state comes from the platform (XInput + keyboard on Windows, game
 // controllers + touch on Android). Vibration is accepted and dropped.
 #include <array>
+#include <cctype>
 #include <atomic>
 #include <deque>
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <set>
 #include <string>
 #include <vector>
 
+#include <nx/game.h>
 #include <nx/runtime.h>
 
 #include "platform.h"
@@ -23,34 +26,38 @@ using namespace plat;
 constexpr uint32_t kStyleFullKey = 1u << 0;
 uint64_t g_sampling = 0;
 
-// Scripted input for automated runs: NX_INPUT="3300:A,3900:A,4200:Down,4300:LUp" holds the button (or tilts the left
-// stick: LUp, LDown, LLeft, LRight) for 8 frames from the given presented frame.
+// Scripted input for automated runs: NX_INPUT="3300:A,3900:A,4200:Down,4300:LUp,4400:T640x360" holds the button (A B X Y
+// L R ZL ZR Plus Minus Up Down Left Right; or tilts the left stick: LUp, LDown, LLeft, LRight; or touches the screen at
+// x, y) for 8 frames from the given frame. M<x>x<y> moves the mouse there (button up) on that frame.
 struct Scripted {
     uint64_t frame;
     uint64_t buttons;
     int32_t lx = 0, ly = 0;  // left stick (LUp, LDown, LLeft, LRight): full tilt
+    bool touch = false;      // T<x>x<y>: a touch at that point of the 1280x720 screen
+    bool move = false;       // M<x>x<y>: the mouse moves to that point
+    uint32_t tx = 0, ty = 0;
 };
 
-std::vector<Scripted> input_script() {
+std::vector<Scripted> parse_script(const std::string& s, uint64_t base) {
     std::vector<Scripted> v;
-    const char* e = std::getenv("NX_INPUT");
-    if (!e) return v;
-    std::string s = e;
     size_t pos = 0;
     while (pos < s.size()) {
         size_t comma = s.find(',', pos);
         std::string item = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        while (!item.empty() && std::isspace(static_cast<unsigned char>(item.back()))) item.pop_back();  // a file's last line
         size_t colon = item.find(':');
         if (colon != std::string::npos) {
             std::string b = item.substr(colon + 1);
             uint64_t bits = b == "A" ? kA : b == "B" ? kB : b == "X" ? kX : b == "Y" ? kY : b == "Plus" ? kPlus :
                             b == "Minus" ? kMinus : b == "Up" ? kUp : b == "Down" ? kDown : b == "Left" ? kLeft :
-                            b == "Right" ? kRight : b == "L" ? kL : b == "R" ? kR : 0;
-            Scripted sc{std::strtoull(item.c_str(), nullptr, 10), bits};
+                            b == "Right" ? kRight : b == "L" ? kL : b == "R" ? kR : b == "ZL" ? kZL : b == "ZR" ? kZR : 0;
+            Scripted sc{base + std::strtoull(item.c_str(), nullptr, 10), bits};
             if (b == "LUp") sc.ly = kStickMax;
             if (b == "LDown") sc.ly = -kStickMax;
             if (b == "LLeft") sc.lx = -kStickMax;
             if (b == "LRight") sc.lx = kStickMax;
+            if (b.size() > 1 && b[0] == 'T' && std::sscanf(b.c_str() + 1, "%ux%u", &sc.tx, &sc.ty) == 2) sc.touch = true;
+            if (b.size() > 1 && b[0] == 'M' && std::sscanf(b.c_str() + 1, "%ux%u", &sc.tx, &sc.ty) == 2) sc.move = true;
             v.push_back(sc);
         }
         if (comma == std::string::npos) break;
@@ -59,11 +66,51 @@ std::vector<Scripted> input_script() {
     return v;
 }
 
+std::vector<Scripted> input_script() {
+    const char* e = std::getenv("NX_INPUT");
+    return e ? parse_script(e, 0) : std::vector<Scripted>{};
+}
+
+// Live input for interactive test runs: a file named input_live in the data folder, holding the NX_INPUT syntax
+// with frames counted from when it is read, is added to the script and deleted (checked every 15 frames). Together
+// with the dump_frames file, a session can be driven step by step past the scripted intro.
+void poll_live(std::vector<Scripted>& script) {
+    static uint64_t next_check = 0;
+    if (g_frame < next_check) return;
+    next_check = g_frame + 15;
+    static const std::string path = data_root() + "/input_live";
+    FILE* f = fopen_utf8(path, "rb");
+    if (!f) return;
+    std::string s;
+    char buf[4096];
+    for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) s.append(buf, n);
+    std::fclose(f);
+    std::remove(path.c_str());
+    std::erase_if(script, [](const Scripted& x) { return x.frame + 8 < g_frame; });
+    std::vector<Scripted> add = parse_script(s, g_frame + 1);
+    log("hid: live input, %zu entries from frame %llu", add.size(), (unsigned long long)g_frame);
+    script.insert(script.end(), add.begin(), add.end());
+}
+
+// hid_hold_buttons: buttons the game side holds down for a while (a click on a list item ends with an A press).
+std::atomic<uint64_t> g_held_buttons{0}, g_held_from{0}, g_held_until{0};
+
 PadState read() {
     PadState p;
-    static const std::vector<Scripted> script = input_script();
+    static std::vector<Scripted> script = input_script();
+    static std::mutex m;
+    std::lock_guard lk(m);
+    poll_live(script);
     for (const auto& s : script)
         if (g_frame >= s.frame && g_frame < s.frame + 8) p.buttons |= s.buttons;
+    // NX_INPUT_TRACE=1: each change of the scripted buttons, with the frame and the sample number the game gets.
+    static const bool trace = std::getenv("NX_INPUT_TRACE") != nullptr;
+    static uint64_t last = 0;
+    if (trace && p.buttons != last)
+        log("hid: script buttons %llx at frame %llu, sample %llu", (unsigned long long)p.buttons,
+            (unsigned long long)g_frame.load(), (unsigned long long)g_sampling + 1);
+    last = p.buttons;
+    if (g_frame >= g_held_from && g_frame < g_held_until) p.buttons |= g_held_buttons;
     read_pad(p);
     for (const auto& s : script)  // after the pad: the script's stick wins while it holds it
         if ((s.lx || s.ly) && g_frame >= s.frame && g_frame < s.frame + 8) p.lx = s.lx, p.ly = s.ly;
@@ -212,20 +259,114 @@ void noop(CPU& c) { c.x[0] = 0; }
 
 // ---- first needed by ACNH (SDK 20) ----
 
-// TouchScreenState<N> {s64 sampling; s32 count; u32 reserved; TouchState touches[N]} (TouchState: 0x28 bytes).
-// No touch screen on the PC: one state with no touches.
-void GetTouchScreenState1(CPU& c) {
-    std::memset(reinterpret_cast<void*>(c.x[0]), 0, 0x10 + 0x28);
-    st<int64_t>(c.x[0], int64_t(g_sampling));
+// TouchScreenState<N> {s64 sampling; s32 count; u32 reserved; TouchState touches[N]}, TouchState (0x28 bytes):
+// {u64 delta_time; u32 attributes (1: start, 2: end); u32 finger_id; u32 x, y (1280x720 screen); u32 diameter_x,
+// diameter_y; u32 rotation_angle; u32 reserved}. One finger: the mouse's left button over the picture, or the
+// script's touches (NX_INPUT "<frame>:T<x>x<y>", held 8 frames).
+struct Touch {
+    bool down = false;
+    uint32_t x = 0, y = 0;
+};
+std::mutex g_touch_lock;
+float g_box[4] = {0, 0, 1, 1};
+Touch g_mouse;
+bool g_mouse_tap = false;  // pressed since the last sample: a click shorter than a frame still touches once
+// Where the mouse is over the picture with its button up, and a count of its moves (mouse_take_hover).
+struct Hover {
+    uint32_t x = 0, y = 0;
+    uint64_t moves = 0;
+};
+Hover g_hover;
+
+Touch current_touch() {
+    static const std::vector<Scripted> script = input_script();
+    for (const auto& s : script)
+        if (s.touch && g_frame >= s.frame && g_frame < s.frame + 8) return {true, s.tx, s.ty};
+    std::lock_guard lk(g_touch_lock);
+    Touch t = g_mouse;
+    if (g_mouse_tap) t.down = true, g_mouse_tap = false;
+    return t;
 }
 
-void GetTouchScreenStates16(CPU& c) {  // int (TouchScreenState<16>*, int count)
+// One sample per presented frame, shared by every reader: the game reads the screen through two APIs each frame
+// (GetTouchScreenState<1> for its controller, GetTouchScreenStates<16> for its UI), and each must see the same
+// edges. As on the console, a touch's last sample is the finger lifted: still listed, with the End attribute, at the
+// last position; the samples after it list none. ACNH's UI (guiTouchManager, main+31c3b50) presses a button when
+// the touch that grabbed it ends with that sample; a touch that just vanishes cancels instead.
+struct TouchSample {
+    uint64_t sampling = 0;
+    uint32_t attributes = 0;  // 1: Start, 2: End
+    bool listed = false;
+    uint32_t x = 0, y = 0;
+};
+
+struct Tap {
+    bool pending = false;
+    uint32_t x = 0, y = 0;
+    uint64_t frame = 0;
+};
+Tap g_tap;  // the last touch that ended, until the game side takes it (touch_take_tap)
+std::mutex g_tap_lock;
+
+TouchSample touch_sample() {
+    static std::mutex lock;
+    static uint64_t frame = ~0ull;
+    static TouchSample cur;
+    std::lock_guard lk(lock);
+    if (g_frame == frame) return cur;
+    frame = g_frame;
+    Touch t = current_touch();
+    bool was_down = cur.listed && !(cur.attributes & 2);
+    cur.sampling++;
+    if (t.down)
+        cur.listed = true, cur.attributes = was_down ? 0 : 1, cur.x = t.x, cur.y = t.y;
+    else if (was_down) {
+        cur.attributes = 2;  // lifted: listed once more, where it was
+        std::lock_guard tk(g_tap_lock);
+        g_tap = {true, cur.x, cur.y, frame};
+    } else
+        cur.listed = false, cur.attributes = 0;
+    if (std::getenv("NX_TRACE_TOUCH") && cur.listed)
+        log("hid: touch at frame %llu: %u x %u%s", (unsigned long long)frame, cur.x, cur.y,
+            cur.attributes == 1 ? " (start)" : cur.attributes == 2 ? " (end)" : "");
+    return cur;
+}
+
+// y_bias: added to the reported y (kept on the screen).
+void fill_touch(uint64_t out, uint32_t y_bias = 0) {
+    TouchSample t = touch_sample();
+    std::memset(reinterpret_cast<void*>(out), 0, 0x10 + 0x28);
+    st<int64_t>(out, int64_t(t.sampling));
+    if (t.listed) {
+        st<int32_t>(out + 8, 1);
+        uint64_t s = out + 0x10;
+        st<uint32_t>(s + 8, t.attributes);
+        st<uint32_t>(s + 16, t.x);
+        st<uint32_t>(s + 20, std::min<uint32_t>(t.y + y_bias, 719));
+        st<uint32_t>(s + 24, 15);
+        st<uint32_t>(s + 28, 15);
+    }
+}
+
+void GetTouchScreenState1(CPU& c) {
+    if (std::getenv("NX_TRACE_TOUCH")) {
+        static int n = 0;
+        if (n++ < 3) log("hid: GetTouchScreenState<1> from %s", describe(c.x[30]).c_str());
+    }
+    fill_touch(c.x[0]);
+}
+
+void GetTouchScreenStates16(CPU& c) {  // int (TouchScreenState<16>*, int count): the newest state only
+    if (std::getenv("NX_TRACE_TOUCH")) {
+        static int n = 0;
+        if (n++ < 3) log("hid: GetTouchScreenStates<16>(count %d) from %s", int(c.x[1]), describe(c.x[30]).c_str());
+    }
     if (int(c.x[1]) < 1) {
         c.x[0] = 0;
         return;
     }
     std::memset(reinterpret_cast<void*>(c.x[0]), 0, 0x10 + 0x28 * 16);
-    st<int64_t>(c.x[0], int64_t(g_sampling));
+    fill_touch(c.x[0], game::kInfo.touch_y_bias);
     c.x[0] = 1;
 }
 
@@ -244,6 +385,39 @@ void GetNpadControllerColor(CPU& c) {
 void GetPlayerLedPattern(CPU& c) { c.x[0] = 1; }
 
 }  // namespace
+
+bool mouse_take_hover(uint32_t& x, uint32_t& y) {
+    static const std::vector<Scripted> script = input_script();
+    static uint64_t scripted_until = 0, taken = 0;
+    std::lock_guard lk(g_touch_lock);
+    for (const auto& s : script)  // a scripted move counts once, on its frame
+        if (s.move && s.frame <= g_frame && s.frame >= scripted_until) {
+            g_hover = {s.tx, s.ty, g_hover.moves + 1};
+            scripted_until = s.frame + 1;
+        }
+    if (g_hover.moves == taken) return false;
+    taken = g_hover.moves;
+    x = g_hover.x, y = g_hover.y;
+    return true;
+}
+
+bool touch_take_tap(uint32_t& x, uint32_t& y, uint64_t& frame) {
+    std::lock_guard lk(g_tap_lock);
+    if (!g_tap.pending) return false;
+    g_tap.pending = false;
+    x = g_tap.x, y = g_tap.y, frame = g_tap.frame;
+    return true;
+}
+
+void hid_hold_buttons(uint64_t buttons, uint32_t frames) {
+    // After a hold still running, two frames up first: each hold is a press of its own.
+    uint64_t from = g_frame + 1, until = g_held_until;
+    if (until + 2 > from) from = until + 2;
+    g_held_until = 0;
+    g_held_buttons = buttons;
+    g_held_from = from;
+    g_held_until = from + frames;
+}
 
 NX_HLE("_ZN2nn3hid14InitializeNpadEv", noop);
 NX_HLE("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", noop);
@@ -290,3 +464,29 @@ NX_HLE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", noop);
 NX_HLE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", zero);
 
 }  // namespace nx
+
+namespace nx::plat {
+
+void set_mouse_touch(bool down, float u, float v) {
+    std::lock_guard lk(g_touch_lock);
+    float x = (u - g_box[0]) / g_box[2], y = (v - g_box[1]) / g_box[3];
+    bool inside = x >= 0 && x < 1 && y >= 0 && y < 1;
+    uint32_t px = uint32_t(x * 1280), py = uint32_t(y * 720);
+    if (down && inside) {
+        if (!g_mouse.down) g_mouse_tap = true;
+        g_mouse = {true, px, py};
+    } else {
+        g_mouse.down = false;
+        // A move of a couple of pixels or more: a resting mouse, or one outside the picture, hovers nothing.
+        int dx = int(px) - int(g_hover.x), dy = int(py) - int(g_hover.y);
+        if (inside && dx * dx + dy * dy >= 4) g_hover = {px, py, g_hover.moves + 1};
+    }
+}
+
+void set_picture_box(float x, float y, float w, float h) {
+    if (w <= 0 || h <= 0) return;
+    std::lock_guard lk(g_touch_lock);
+    g_box[0] = x, g_box[1] = y, g_box[2] = w, g_box[3] = h;
+}
+
+}  // namespace nx::plat

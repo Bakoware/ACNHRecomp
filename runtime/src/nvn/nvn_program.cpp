@@ -17,6 +17,7 @@ namespace {
 
 struct Program : Object {
     std::vector<const ShaderInfo*> shaders;  // a stage with no translation is left out (and logged once)
+    uint32_t missing = 0;                    // stages left out: draws with it lose them (a fragment: depth only)
 };
 
 void ProgramInitialize(CPU& c) {  // NVNboolean (NVNprogram*, NVNdevice*)
@@ -28,6 +29,7 @@ void ProgramFinalize(CPU& c) { destroy(c.x[0]); }
 
 void set_shaders(CPU& c, size_t stride) {
     std::vector<const ShaderInfo*> shaders;
+    uint32_t missing = 0;
     for (int k = 0; k < int(c.x[1]); k++) {
         uint64_t entry = c.x[2] + uint64_t(k) * stride;
         uint64_t code = ld<uint64_t>(entry), control = ld<uint64_t>(entry + 8);
@@ -36,9 +38,11 @@ void set_shaders(CPU& c, size_t stride) {
         if (!pool || !control) {
             log("nvn: program %llx stage %d: code %llx control %llx not found", (unsigned long long)c.x[0], k,
                 (unsigned long long)code, (unsigned long long)control);
+            missing++;
             continue;
         }
         if (const ShaderInfo* s = shader_for(pool->memory + offset, control)) shaders.push_back(s);
+        else missing++;
     }
     static const bool trace = std::getenv("NX_TRACE_PROGRAMS") != nullptr;  // each program's stages when set
     if (trace) {
@@ -46,7 +50,7 @@ void set_shaders(CPU& c, size_t stride) {
         for (const ShaderInfo* s : shaders) line += " " + s->hash;
         log("nvn: program %llx set:%s", (unsigned long long)c.x[0], line.c_str());
     }
-    if (auto* p = get<Program>(c.x[0])) p->shaders = std::move(shaders);
+    if (auto* p = get<Program>(c.x[0])) p->shaders = std::move(shaders), p->missing = missing;
     c.x[0] = 1;
 }
 
@@ -58,6 +62,11 @@ void ProgramSetShadersExt(CPU& c) { set_shaders(c, 0x18); }
 const std::vector<const ShaderInfo*>* program_shaders(uint64_t program) {
     auto* p = get<Program>(program);
     return p ? &p->shaders : nullptr;
+}
+
+uint32_t program_missing_stages(uint64_t program) {
+    auto* p = get<Program>(program);
+    return p ? p->missing : 0;
 }
 
 NX_HLE("nvnProgramInitialize", ProgramInitialize);

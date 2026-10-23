@@ -15,6 +15,9 @@ struct Info {
     // main.npdm META +0x14. Non-zero enables nn::os virtual address memory (VammManager, SDK 16) over the alias
     // region; svcGetInfo(SystemResourceSizeTotal) reports it.
     uint64_t system_resource_size = 0;
+    // Added to the y of touches read with GetTouchScreenStates (the 1280x720 screen): a game that moves touches up
+    // to make up for the fingertip would miss where the mouse points by that much.
+    uint32_t touch_y_bias = 0;
 };
 extern const Info kInfo;
 

@@ -4,6 +4,7 @@ Works on capstone's lite disassembly (mnemonic + operand string), which is fast 
 """
 import bisect
 import re
+from array import array
 from dataclasses import dataclass, field
 
 import capstone
@@ -54,6 +55,58 @@ NO_DEST = {"str", "strb", "strh", "stur", "sturb", "sturh", "stp", "stlr", "stlr
            "tbz", "tbnz", "prfm", "nop", "udf", "brk", "svc", "msr", "dmb", "dsb", "isb", "clrex", "hint"}
 
 
+class Insns:
+    """addr -> (mnemonic, op_str) for the whole text, as a dict would hold it but in about a tenth of the memory:
+    a mnemonic number and a shared operand string per instruction slot. ACNH's main has 16.5M instructions; as a
+    dict of tuples they took 8 GB, more than the machines this targets have."""
+
+    def __init__(self, t0, size):
+        self.t0, self.n = t0, size // 4
+        self.mn = array("H", bytes(2 * self.n))  # 0: no instruction (data, undecodable)
+        self.op = [""] * self.n
+        self.names = [""]
+        self._ids = {}
+        self._ops = {}
+
+    def add(self, a, mn, op):
+        k = self._ids.get(mn)
+        if k is None:
+            k = self._ids[mn] = len(self.names)
+            self.names.append(mn)
+        i = (a - self.t0) >> 2
+        self.mn[i] = k
+        self.op[i] = self._ops.setdefault(op, op)
+
+    def done(self):
+        self._ops = None  # the strings are shared by now; the lookup table is only for building
+
+    def _index(self, a):
+        i = (a - self.t0) >> 2
+        return i if 0 <= i < self.n and not (a - self.t0) & 3 and self.mn[i] else -1
+
+    def __contains__(self, a):
+        return self._index(a) >= 0
+
+    def get(self, a, default=None):
+        i = self._index(a)
+        return (self.names[self.mn[i]], self.op[i]) if i >= 0 else default
+
+    def __getitem__(self, a):
+        i = self._index(a)
+        if i < 0:
+            raise KeyError(a)
+        return self.names[self.mn[i]], self.op[i]
+
+    def __len__(self):
+        return sum(1 for k in self.mn if k)
+
+    def items(self):
+        names, op, t0 = self.names, self.op, self.t0
+        for i, k in enumerate(self.mn):
+            if k:
+                yield t0 + 4 * i, (names[k], op[i])
+
+
 @dataclass
 class Function:
     start: int
@@ -65,7 +118,7 @@ class Function:
 @dataclass
 class Analysis:
     module: nso.Module
-    insns: dict  # addr -> (mnemonic, op_str)
+    insns: Insns  # addr -> (mnemonic, op_str)
     functions: list = field(default_factory=list)  # sorted by start
     plt: dict = field(default_factory=dict)  # stub addr -> import name
     got_imports: dict = field(default_factory=dict)  # got slot -> import name
@@ -83,10 +136,14 @@ def analyze(m, log=print):
     cs = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
     cs.skipdata = True
     t0, tn = m.text
-    insns = {}
-    for a, _, mn, op in cs.disasm_lite(bytes(m.image[t0:t0 + tn]), t0):
-        if mn != ".byte":
-            insns[a] = (mn, op)
+    insns = Insns(t0, tn)
+    # In slices: capstone decodes a whole buffer into one C array first (~250 bytes per instruction, 4 GB for main).
+    step = 1 << 16
+    for s in range(t0, t0 + tn, step):
+        for a, _, mn, op in cs.disasm_lite(bytes(m.image[s:min(s + step, t0 + tn)]), s):
+            if mn != ".byte":
+                insns.add(a, mn, op)
+    insns.done()
     an = Analysis(m, insns)
     text_end = t0 + tn
 

@@ -246,8 +246,9 @@ void QueueSubmitCommands(CPU& c) {  // (NVNqueue*, int count, const NVNcommandHa
         g_sub_called++;
     }
     tl("submit-call");
-    worker_run([lists = std::move(lists), deferred] {
+    worker_run([lists = std::move(lists), deferred, scale = uw_wanted_generation()] {
         tl("replay>");
+        uw_allow(scale);  // the screen scale this frame was recorded for (nvn_ultrawide.cpp)
         gpu_submit(lists, deferred);
         tl("replay<");
         submit_done();
@@ -560,11 +561,16 @@ void WindowSetPresentInterval(CPU& c) {
 // Frame pacing: a present returns no earlier than the window's present interval (in 60 Hz vsyncs) after the previous
 // one. On the Switch the texture-available sync of the next acquire does this; ours is signaled at once, so without
 // it the game runs as fast as it can once it is faster than 60 fps. A late frame is not snapped to the next vsync
-// (an 18 ms frame stays 18 ms, not 33). NX_NO_FRAME_LIMIT=1: unpaced.
+// (an 18 ms frame stays 18 ms, not 33). NX_NO_FRAME_LIMIT=1: unpaced. NX_FAST_UNTIL=<frame>: 60 fps until that frame,
+// the game's own interval after it (scripted test runs: the logic steps per frame, so the intro of a new save plays
+// twice as fast and what follows is measured at the game's pace; unpaced, loads that follow the clock took thousands
+// of frames and a frame-numbered input script lost its place).
 void pace_present(int interval) {
     static const bool off = std::getenv("NX_NO_FRAME_LIMIT") != nullptr;
+    static const uint64_t fast_until = std::getenv("NX_FAST_UNTIL") ? std::strtoull(std::getenv("NX_FAST_UNTIL"), nullptr, 10) : 0;
     static uint64_t next = 0;
     if (off || interval <= 0) return;
+    if (g_frame < fast_until) interval = 1;
     uint64_t now = plat::monotonic_ns();
     if (next > now) plat::sleep_ns(next - now), now = plat::monotonic_ns();
     static uint64_t presents = 0, at2 = 0;  // how often the game asks for 30 fps (interval 2), per 600 presents
@@ -617,11 +623,11 @@ void QueuePresentTexture(CPU& c) {
 }
 
 // (NVNwindow*, int x, int y, int width, int height): the part of the window textures shown. In handheld mode
-// (NX_HANDHELD) the game renders 1280x720 into its 1920x1080 window textures and crops to it.
+// (NX_HANDHELD) the game renders 1280x720 into its 1920x1080 window textures and crops to it. Kept as the game gave
+// it: the present scales it to the window texture's size (uw_crop, nvn_ultrawide.cpp).
 void WindowSetCrop(CPU& c) {
     if (auto* w = get<Window>(c.x[0])) {
         int32_t v[4] = {int32_t(c.x[1]), int32_t(c.x[2]), int32_t(c.x[3]), int32_t(c.x[4])};
-        uw_crop(v);  // NX_ULTRAWIDE
         if (std::memcmp(v, w->crop, sizeof v) != 0) {
             static int logged = 0;
             if (logged++ < 20) log("nvn: window crop %d,%d %dx%d", v[0], v[1], v[2], v[3]);

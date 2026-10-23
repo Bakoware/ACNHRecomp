@@ -1,0 +1,87 @@
+#version 450
+// Frame generation, last pass: the frame halfway between `prev` and `cur`. Each pixel picks, among the vectors around
+// it (the field interpolated, the four nearest cells' own when they differ, and zero), the one whose two ends agree
+// best, and shows the average of those ends. A pixel that did not change at all (HUD, still scenery) is copied as is,
+// so it stays sharp. Where no vector fits (something uncovered), the result leans to the plain cross-fade of the two
+// frames, and after a scene cut (most cells unmatched) the whole frame is that cross-fade.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D prevc;
+layout(set = 0, binding = 1) uniform sampler2D curc;
+layout(set = 0, binding = 2) uniform sampler2D field;
+layout(set = 0, binding = 4, rgba8) uniform writeonly image2D dst;
+layout(set = 0, binding = 5, r32ui) uniform readonly uimage2D unmatched;  // smooth.comp's count
+layout(push_constant) uniform P {
+    ivec4 size;  // xy: the image's size; z: the unmatched cells above which the frame cross-fades (a scene cut)
+    vec4 a;      // x: full pixels per field cell (16)
+    vec4 b;
+} p;
+
+vec2 px, inv;
+vec3 best_col;
+float best_e, dm;  // dm: the local luma change (cur - prev), a fade: left out of the comparisons
+
+float err(vec3 a, vec3 b) { return dot(abs(a + dm - b), vec3(0.3333)); }
+
+void try_v(vec2 v, float bias) {
+    vec3 a = texture(prevc, (px - 0.5 * v) * inv).rgb;
+    vec3 b = texture(curc, (px + 0.5 * v) * inv).rgb;
+    float e = err(a, b) + bias;
+    if (e < best_e) best_e = e, best_col = 0.5 * (a + b);
+}
+
+// A group covers 16x16 pixels (2x2 per invocation): the field cells around it (vector, luma change), read once.
+shared vec3 cells[3][3];
+
+bool cut;
+
+void pixel(ivec2 q, ivec2 base) {
+    if (any(greaterThanEqual(q, p.size.xy))) return;
+    px = vec2(q) + 0.5;
+    vec3 a0 = texelFetch(prevc, q, 0).rgb, b0 = texelFetch(curc, q, 0).rgb;
+    dm = 0.0;
+    if (err(a0, b0) < 1.5 / 255.0 || cut) {
+        imageStore(dst, q, vec4(0.5 * (a0 + b0), 1.0));
+        return;
+    }
+    vec2 f = px / p.a.x - 0.5;
+    ivec2 i0 = ivec2(floor(f)) - base;
+    vec2 w = f - floor(f);
+    vec3 c00 = cells[i0.y][i0.x], c10 = cells[i0.y][i0.x + 1];
+    vec3 c01 = cells[i0.y + 1][i0.x], c11 = cells[i0.y + 1][i0.x + 1];
+    vec3 cb = mix(mix(c00, c10, w.x), mix(c01, c11, w.x), w.y);
+    vec2 vb = cb.xy;
+    dm = cb.z;
+    if (abs(dm) > 0.12) {  // too large a change of brightness for a fade between two frames: a cut, cross-faded
+        imageStore(dst, q, vec4(0.5 * (a0 + b0), 1.0));
+        return;
+    }
+    best_e = err(a0, b0) + 0.03;
+    best_col = 0.5 * (a0 + b0);
+    try_v(vb, 0.0);
+    // The cells' own vectors where they differ and the interpolated one does not fit (motion edges): this bounds
+    // the cost, most moving pixels take the first.
+    float spread = max(max(length(c00.xy - vb), length(c10.xy - vb)), max(length(c01.xy - vb), length(c11.xy - vb)));
+    if (spread > 0.75 && best_e > 0.02) {
+        try_v(c00.xy, 0.01);
+        try_v(c10.xy, 0.01);
+        try_v(c01.xy, 0.01);
+        try_v(c11.xy, 0.01);
+    }
+    // No vector makes the two ends agree (something uncovered, or effects that do not move): towards the plain
+    // cross-fade, which at least does not tear.
+    best_col = mix(best_col, 0.5 * (a0 + b0), smoothstep(0.1, 0.25, best_e));
+    imageStore(dst, q, vec4(best_col, 1.0));
+}
+
+void main() {
+    ivec2 t = ivec2(gl_LocalInvocationID.xy), g = ivec2(gl_WorkGroupID.xy);
+    // The group's pixels need cells g-1 .. g+1 (cell size 16, sampled at cell centres).
+    if (t.x < 3 && t.y < 3) {
+        vec4 c = texelFetch(field, clamp(g - 1 + t, ivec2(0), textureSize(field, 0) - 1), 0);
+        cells[t.y][t.x] = vec3(c.xy, c.w);
+    }
+    barrier();
+    cut = imageLoad(unmatched, ivec2(0)).x > uint(p.size.z);
+    inv = 1.0 / vec2(p.size.xy);
+    for (int k = 0; k < 4; k++) pixel(g * 16 + t * 2 + ivec2(k & 1, k >> 1), g - 1);
+}

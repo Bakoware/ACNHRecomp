@@ -200,7 +200,8 @@ static_assert(offsetof(SupportBuffer, is_bgra) == 0x10 && offsetof(SupportBuffer
 
 SupportBuffer support_buffer_defaults();  // render scale 1 everywhere, no BGRA, no alpha test, zero viewport
 // What Ryujinx writes for viewport 0 (SetViewportTransformDisable / SetViewportSize), with render scale 1.
-void support_buffer_set_viewport(SupportBuffer& sb, float width, float height, bool transform_disabled = false);
+void support_buffer_set_viewport(SupportBuffer& sb, float width, float height, bool transform_disabled = false,
+                                 float scale = 1.0f);
 
 // ---- one stage ---------------------------------------------------------------------------------------------------
 
@@ -226,6 +227,8 @@ struct ShaderInfo {
 // block's results.tsv resources column, or null (storage buffer c[0] offsets then stay -1).
 bool make_shader_info(const uint8_t* code, const uint8_t* control, std::vector<uint32_t> spirv,
                       const std::string* resources, ShaderInfo& out, std::string* error = nullptr);
+// The shader's SPIR-V: kept in `spirv` only until shader_for has read what it needs, then read from its .spv.
+std::vector<uint32_t> shader_spirv(const ShaderInfo* s);
 
 const char* stage_name(ShaderStage s);
 const char* source_name(NvnSource s);

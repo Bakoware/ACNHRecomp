@@ -7,7 +7,8 @@
 // Tests: NX_LAUNCHER_SIZE=WxH (window size), NX_LAUNCHER_LANG=<code>, NX_LAUNCHER_PAGE=<page> (pages.cpp),
 // NX_LAUNCHER_SHOT=<file.bmp> (saves the window after NX_LAUNCHER_SHOT_AFTER seconds, default 1, and exits),
 // NX_LAUNCHER_INI=<file> (another launcher.ini), NX_LAUNCHER_SCRIPT=<script> (runs in place of setup_acnh.sh),
-// NX_LAUNCHER_SCROLL=<0..1> (the page scrolled that far).
+// NX_LAUNCHER_SCROLL=<0..1> (the page scrolled that far), NX_LAUNCHER_SEARCH=keys|base|update|dlc|ptbr (that card
+// of the files page searched).
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
@@ -86,7 +87,9 @@ int main(int argc, char** argv) {
             do {
                 ImGui_ImplSDL3_ProcessEvent(&e);
                 if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) pages_close_requested();
-                if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) pages_drop(e.drop.data);
+                if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) pages_drop(e.drop.data, e.drop.x, e.drop.y);
+                if (e.type == SDL_EVENT_DROP_BEGIN || e.type == SDL_EVENT_DROP_POSITION) pages_drag(true, e.drop.x, e.drop.y);
+                if (e.type == SDL_EVENT_DROP_COMPLETE || e.type == SDL_EVENT_MOUSE_MOTION) pages_drag(false, 0, 0);
             } while (SDL_PollEvent(&e));
         } else if (settle > 0) {
             settle--;

@@ -123,8 +123,7 @@ SupportBuffer support_buffer_defaults() {
     return sb;
 }
 
-void support_buffer_set_viewport(SupportBuffer& sb, float width, float height, bool transform_disabled) {
-    const float scale = 1.0f;  // no resolution scaling
+void support_buffer_set_viewport(SupportBuffer& sb, float width, float height, bool transform_disabled, float scale) {
     sb.viewport_inverse[0] = width != 0 ? scale * 2.0f / width : 0.0f;
     sb.viewport_inverse[1] = height != 0 ? scale * 2.0f / height : 0.0f;
     sb.viewport_inverse[2] = 1.0f;
@@ -300,8 +299,24 @@ const ShaderInfo* shader_for(uint64_t code_host, uint64_t control) {
     info->dynamic_uniforms = dynamic_uniform_bindings(info.get());
     info->written_storage = written_storage_bindings(info.get());
     info->masks_known = true;
+    // Only pipeline builds read the words again (shader_spirv): they are dropped here and read back from the .spv,
+    // which keeps ~90 MB of SPIR-V for ~2,300 shaders out of RAM.
+    info->spirv = {};
     slot = std::move(info);
     return slot.get();
+}
+
+std::vector<uint32_t> shader_spirv(const ShaderInfo* s) {
+    if (!s->spirv.empty()) return s->spirv;
+    std::string bytes;
+    std::vector<uint32_t> words;
+    if (read_whole(plat::data_root() + "/spirv/" + s->hash + ".spv", bytes) && bytes.size() % 4 == 0) {
+        words.resize(bytes.size() / 4);
+        std::memcpy(words.data(), bytes.data(), bytes.size());
+    } else {
+        log("nvn: shader %s: its .spv can no longer be read", s->hash.c_str());
+    }
+    return words;
 }
 
 #endif  // NX_SHADERS_STANDALONE

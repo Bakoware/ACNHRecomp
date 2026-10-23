@@ -5,6 +5,7 @@
 #include <memory>
 #include <tuple>
 
+#include "nvn_ultrawide.h"
 #include "nvn_vk.h"
 
 namespace nx::nvn {
@@ -93,6 +94,18 @@ bool keep_targets() {
 GpuImage* image_of(uint64_t guest) {
     Texture* t = get<Texture>(guest);
     if (!t) return nullptr;
+    if (t->uw && t->uw_gen != uw_generation()) {  // a new screen scale (nvn_ultrawide.cpp): a new image of the new size
+        static uint32_t purged = 0;
+        if (purged != uw_generation()) {  // the kept images of the old size go once no submit uses them
+            purged = uw_generation();
+            for (auto it = g_kept_targets.begin(); it != g_kept_targets.end();)
+                if (it->second && it->second->uw) retire_image(std::move(it->second)), it = g_kept_targets.erase(it);
+                else ++it;
+        }
+        uw_resize(*t);
+        retire_image(std::move(t->image));
+        t->image.reset();
+    }
     if (t->image) return t->image.get();
     uint32_t swizzle = uint32_t(t->swizzle[0]) | uint32_t(t->swizzle[1]) << 8 | uint32_t(t->swizzle[2]) << 16 |
                   uint32_t(t->swizzle[3]) << 24;
@@ -125,6 +138,8 @@ GpuImage* image_of(uint64_t guest) {
     img->format = bc_host_decode(t->format) ? bc_decoded_format(t->format) : vk_format(t->format);  // nvn_bc.cpp
     img->nvn_format = t->format;
     img->uw = t->uw;
+    if (t->uw && t->base_w && t->base_h)
+        img->sx = float(t->width) / float(t->base_w), img->sy = float(t->height) / float(t->base_h);
     if (t->format == 0x1 && t->pool_swizzle == 0x02010101u) {
         img->format = VK_FORMAT_R8G8B8A8_UNORM;
         img->alpha_from_r = true;

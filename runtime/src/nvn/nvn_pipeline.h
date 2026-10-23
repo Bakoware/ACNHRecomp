@@ -75,7 +75,9 @@ struct PipelineKey {
     uint32_t depth_clamp = 0;  // SetDepthClamp (applied only where the device has the depthClamp feature)
     uint32_t ufloat_colors = 0;  // bit k: colour target k is R11G11B10F (no alpha: destination alpha reads 1)
     uint32_t alpha_to_coverage = 0;  // BindMultisampleState (G7)
-    float uw_x = 0;  // NX_ULTRAWIDE: gl_Position.x scale of the vertex stage (0: none, the module has no constant)
+    // Screen scale (nvn_ultrawide.cpp): the UI squeeze of the vertex stage, gl_Position.x * uw_x when positive,
+    // gl_Position.y * -uw_x when negative (0: none, the unpatched module).
+    float uw_x = 0;
 };
 VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout);
 // The pipelines an earlier session built (<pipeline cache>.keys): a canonical key with its two shaders by hash

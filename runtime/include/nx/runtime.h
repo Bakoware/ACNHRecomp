@@ -82,7 +82,6 @@ VmInfo vm_query(uint64_t addr);
 struct LoadedModule {
     const ModuleInfo* info;
     uint64_t base, size;
-    Fn* table;  // text offset / 4 -> function
 };
 
 void load_modules(const ModuleInfo* const* mods, size_t count, const std::string& data_dir);
@@ -100,6 +99,14 @@ struct HleRegistrar {
 #define NX_HLE_CAT(a, b) NX_HLE_CAT2(a, b)
 #define NX_HLE(sym, fn) static ::nx::HleRegistrar NX_HLE_CAT(hle_reg_, __LINE__)(sym, fn)
 
+// Instruction hooks: the recompiler (--hooks <file>) makes the instruction at main+offset call nx_hook first, with
+// the guest registers in the context; the function registered for that offset may read and change them. Offsets
+// are from the first module's base (main).
+struct HookRegistrar {
+    HookRegistrar(uint64_t offset, HleFn fn);
+};
+#define NX_HOOK(offset, fn) static ::nx::HookRegistrar NX_HLE_CAT(hook_reg_, __LINE__)(offset, fn)
+
 uint64_t hle_address(const char* name);  // thunk address; unknown names get a logging stub
 uint64_t hle_address_or(const char* name, HleFn fallback);  // unknown names get `fallback`
 const char* hle_current_name();  // inside an HLE function: the name its thunk was made for
@@ -111,6 +118,17 @@ inline void guest_call(CPU& c, uint64_t addr) { call(c, addr); }
 // ---- kernel ---------------------------------------------------------------------------------------------------
 
 extern std::atomic<uint64_t> g_frame;  // frames presented so far (vkQueuePresentKHR)
+
+// ---- input (hle_hid.cpp), for games that drive their own UI from the touch screen / mouse ----------------------
+
+// The last touch that ended (finger lifted: a mouse click released): where on the 1280x720 screen and on which
+// frame. False when there was none since the last call.
+bool touch_take_tap(uint32_t& x, uint32_t& y, uint64_t& frame);
+// Where the mouse is (1280x720 screen, button up), when it moved since the last call; false when it did not.
+bool mouse_take_hover(uint32_t& x, uint32_t& y);
+// Holds these npad buttons (nn::hid::NpadButton bits: A = 1) down for `frames` frames from the next one (after the
+// one before it, if that is still held, and two frames up).
+void hid_hold_buttons(uint64_t buttons, uint32_t frames);
 
 void kernel_init();
 uint32_t create_main_thread(uint64_t stack_size);  // the calling host thread becomes it

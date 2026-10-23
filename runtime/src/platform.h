@@ -67,6 +67,11 @@ struct PadState {
     int32_t lx = 0, ly = 0, rx = 0, ry = 0;
 };
 void read_pad(PadState& p);  // player 1
+// The mouse as the console's touch screen (hle_hid.cpp): the left button held at (u, v), across the window (0..1).
+// The picture's place in the window comes from the present step (set_picture_box: x, y, w, h in 0..1), so a click
+// on the bars touches nothing.
+void set_mouse_touch(bool down, float u, float v);
+void set_picture_box(float x, float y, float w, float h);
 // Touch controls to draw over the picture (touch_layout.cpp, platform_android_input.cpp): circles at x, y (0..1
 // across the landscape screen), radius r (a fraction of its height), opacity alpha. 0 where nothing is drawn.
 struct OverlayShape {

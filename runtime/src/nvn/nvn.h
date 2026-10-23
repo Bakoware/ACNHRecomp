@@ -196,7 +196,10 @@ struct Texture : Object {
     uint32_t width = 0, height = 0, depth = 0, stride = 0;
     uint64_t pool = 0, offset = 0, storage_size = 0;
     uint64_t memory = 0, gpu = 0;
-    bool uw = false;  // NX_ULTRAWIDE: a screen-sized render target whose width was widened (nvn_ultrawide.cpp)
+    // A screen-sized render target (nvn_ultrawide.cpp): its size is the game's (base_w x base_h) times the screen
+    // scale of generation uw_gen (internal resolution, wider or taller aspect). The game is told the base size.
+    bool uw = false;
+    uint32_t base_w = 0, base_h = 0, uw_gen = 0;
     uint32_t block_height_gobs = 0;  // packaged (BNTX) textures carry their own; 0: the layout's default
     uint8_t swizzle[4] = {2, 3, 4, 5};  // NVNtextureSwizzle per channel (0 zero, 1 one, 2 R, 3 G, 4 B, 5 A)
     // nvnTextureWriteTexels data not yet on the GPU (a glyph cache is filled this way): applied before the next use.
@@ -327,6 +330,9 @@ struct Cmd {
     int32_t i[4] = {};
     uint32_t blob = 0;  // index into CmdList::blobs (decoded state, inline data)
 };
+// ClearColor / ClearDepthStencil mask bit: from a NX_CLEAR_ONCE_AT site, replayed only for the first such clear of its
+// image since the last present (nvn_cmd.cpp, nvn_clears.cpp).
+constexpr uint32_t kClearOnce = 1u << 31;
 
 struct CmdList {
     std::vector<Cmd> cmds;
@@ -410,6 +416,7 @@ uint64_t gpu_write_back_serial();  // the last submit that writes guest memory (
 // Programs: the translated stages bound by nvnProgramSetShaders (nvn_program.cpp; ShaderInfo in nvn_shaders.h).
 struct ShaderInfo;
 const std::vector<const ShaderInfo*>* program_shaders(uint64_t program);
+uint32_t program_missing_stages(uint64_t program);  // stages bound without a SPIR-V translation (nvn_shaders.cpp)
 
 // A format's block (width, height in texels; bytes), from the SDK driver's format table (nvn_texture_layout.cpp).
 void format_block(uint32_t format, uint32_t& block_w, uint32_t& block_h, uint32_t& bytes);

@@ -25,9 +25,10 @@ namespace launcher {
 void pages_init(SDL_Window* window);
 // One frame of the current page inside an ImGui frame; false once the launcher should exit (the game started).
 bool pages_draw(float scale, ImFont* title);
-void pages_drop(const std::string& path);  // a file dropped on the window
-void pages_close_requested();              // the window's close button (asks first while the setup runs)
-bool pages_busy();                         // something animates: draw at full rate
+void pages_drop(const std::string& path, float x, float y);  // a file dropped on the window, at x, y
+void pages_drag(bool over, float x, float y);                // files dragged over the window (or no longer)
+void pages_close_requested();                                // the window's close button (asks first while it builds)
+bool pages_busy();                                           // something animates: draw at full rate
 
 // ---- a "section.key = value" file grouped under [section] headers, as config.cpp writes config.ini ----------
 
@@ -60,7 +61,7 @@ bool is_dir(const std::string& path);
 
 // ---- the player's files (files.cpp) ---------------------------------------------------------------------------
 
-enum class Kind { Keys, Base, Update, Dlc, Mod };
+enum class Kind { Keys, TitleKeys, Base, Update, Dlc, Mod };
 enum class Status { Empty, Ok, Warning, Error };  // Warning: usable, but could not be checked fully
 
 struct FileCheck {
@@ -76,6 +77,18 @@ bool classify_file(const std::string& path, Kind& kind);
 // prod.keys in the usual places (~/.switch, the emulators' folders) or next to one of `near`; "" if none.
 std::string find_keys(const std::vector<std::string>& near);
 std::string title_keys_for(const std::string& prod_keys);  // title.keys next to it, "" if none
+
+struct Found {
+    std::string path;
+    Kind kind;
+    uint64_t size;
+    FileCheck check;
+};
+// The files that look like `kind` in the user's Downloads, Desktop and Documents (a few folders deep), the top of
+// the home folder, the folders of `near` (files or folders) and, for keys, the emulators' folders; each checked, the
+// usable ones first.
+std::vector<Found> search_files(Kind kind, const std::vector<std::string>& near);
+std::string short_dir(const std::string& path);  // the file's folder, the home folder shown as "~"
 
 // ---- builds (files.cpp) ---------------------------------------------------------------------------------------
 

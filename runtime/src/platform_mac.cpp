@@ -372,7 +372,17 @@ static void sample_input() {
         if (k[SDL_SCANCODE_BACKSPACE] && opt.keys[17] == SDL_SCANCODE_ESCAPE) p.buttons |= kMinus;
     }
     // The settings screen takes the input while it is open (and watches for its Minus + Plus combo).
-    if (nx::ui::ui_pad(p.buttons, p.lx, p.ly)) p = PadState{};
+    bool ui = nx::ui::ui_pad(p.buttons, p.lx, p.ly);
+    if (ui) p = PadState{};
+    // The mouse: its left button touches the console's screen where the picture is (the game's own touch support).
+    if (g_window) {
+        float mx = 0, my = 0;
+        int ww = 0, wh = 0;
+        SDL_MouseButtonFlags mb = SDL_GetMouseState(&mx, &my);
+        SDL_GetWindowSize(g_window, &ww, &wh);
+        bool focus = SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS;
+        nx::plat::set_mouse_touch(!ui && focus && (mb & SDL_BUTTON_LMASK) && ww > 0 && wh > 0, mx / float(ww), my / float(wh));
+    }
     std::lock_guard lk(g_pad_lock);
     g_pad = p;
 }

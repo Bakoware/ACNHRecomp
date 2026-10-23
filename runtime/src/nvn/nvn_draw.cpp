@@ -273,6 +273,17 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         g_stats.no_vertex++;
         return false;
     }
+    // A stage without a translation ("no <hash>.spv" when the program was set): without its fragment shader the
+    // draw writes depth only, and the deferred lighting shows a black silhouette (character faces, the Nook Stop).
+    // Drawn anyway; the first draws say which, so a missing translation is not mistaken for a rendering bug.
+    if (uint32_t missing = program_missing_stages(g_state.program)) {
+        static int logged = 0;
+        g_stats.missing_stage++;
+        if (logged < 20 && ++logged)
+            log("nvn: draw %llu: program %llx has %u stage(s) without a translation (vs %s fs %s): run with "
+                "NX_DUMP_SHADER_MISSES=1 and translate shader_misses/", (unsigned long long)g_stats.total,
+                (unsigned long long)g_state.program, missing, vs->hash.c_str(), fs ? fs->hash.c_str() : "none");
+    }
     std::vector<const ShaderInfo*> swapped;  // NX_SWAP_FS / NX_SKIP_FS (nvn_draw_trace.cpp)
     if (!debug_shader_overrides(shaders, fs, swapped)) return false;
     const ProgramLayout& layout = program_layout(*shaders);
@@ -342,11 +353,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         return t;
     }();
     vertex_read_barrier(cb, vs);  // G4
-    g_uw_wide = false;  // NX_ULTRAWIDE: is this draw's target a widened one (viewport, scissor, clears, vs scale)
-    if (uw_on()) {
-        GpuImage* wi = t.color_count && t.colors[0] ? image_of(t.colors[0]) : (t.depth ? image_of(t.depth) : nullptr);
-        g_uw_wide = wi && wi->uw;
-    }
+    // Is this draw's target a scaled screen target (viewport, scissor, render scale, UI squeeze; nvn_ultrawide.cpp)
+    g_uw = UwTarget{};
+    if (GpuImage* wi = t.color_count && t.colors[0] ? image_of(t.colors[0]) : (t.depth ? image_of(t.depth) : nullptr);
+        wi && wi->uw && (wi->sx != 1.0f || wi->sy != 1.0f))
+        g_uw = {true, wi->sx, wi->sy};
     bool need_break = gathered & kNeedBreak;
     if (gathered & kSampledPending) clears_flush(cb);  // cleared (and stored) before it is sampled
     static const bool bytes = std::getenv("NX_TARGETS_MEMCMP") != nullptr;  // bisecting
@@ -396,31 +407,31 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
     GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
     key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
-    // NX_ULTRAWIDE. The world is widened by the camera aspect patch (nvn_ultrawide.cpp), so only the 16:9 UI is
-    // squeezed by 1/k (centred safe area). The UI is drawn into small BGRA8 layer targets (430x180 for the HUD, never
-    // widened) and composited into the scene target by a quad: the vertex shaders seen drawing into such layer targets
-    // are the "UI" ones, and a UI quad into a widened target that does not sample a widened texture is squeezed.
-    // NX_UW_CAMERA=0 (no camera patch): every geometry draw is squeezed, a world-and-UI shrink.
+    // Screen scale, aspect part (nvn_ultrawide.cpp). The world is widened (or made taller) by the camera patch, so
+    // only the 16:9 UI is squeezed into the middle (by ax, ay). The UI is drawn into small BGRA8 layer targets (430x180
+    // for the HUD, never scaled) and composited into the scene target by a quad: the vertex shaders seen drawing into
+    // such layer targets are the "UI" ones, and a UI quad into a scaled target that does not sample a scaled texture
+    // is squeezed. NX_UW_CAMERA=0 (no camera patch): every geometry draw is squeezed, a world-and-UI shrink.
     static const bool cam_patch = !(std::getenv("NX_UW_CAMERA") && std::getenv("NX_UW_CAMERA")[0] == '0');
-    if (uw_on() && cam_patch && !g_uw_wide && t.color_count && t.colors[0]) {
+    const bool aniso = g_uw.on && (g_uw.ax() != 1.0f || g_uw.ay() != 1.0f);
+    if (uw_on() && cam_patch && !g_uw.on && t.color_count && t.colors[0]) {
         const Texture* lt = get<Texture>(t.colors[0]);
         if (lt && lt->format == 0x25 && (lt->flags & 8)) uw_ui_vertex_shader(vs);
     }
     // NX_UW_UI=learn: only the vertex shaders learned above; default: every draw without depth test (screen-space UI).
     static const bool ui_learn = std::getenv("NX_UW_UI") && std::string(std::getenv("NX_UW_UI")) == "learn";
     const bool ui_pick = !cam_patch || (ui_learn ? uw_is_ui_vertex_shader(vs) : !g_state.depth.depth_test);
-    if (g_uw_wide && uw_vs_scaled(vs) && ui_pick) {
-        // A short draw (a triangle or a quad) that samples a widened render target is a screen-space pass (post
-        // chain, composite): it already covers the widened target.
+    if (aniso && uw_vs_scaled(vs) && ui_pick) {
+        // A draw that samples a widened render target is a screen-space pass (post chain, composite) or a picture
+        // of the screen (the blurred capture behind a menu): it already covers the whole target. (Only short draws
+        // counted before: the capture behind the birthday screen was squeezed twice, a 1920 / k wide band.)
         bool samples_wide = false;
-        const uint64_t count = indexed ? uint64_t(c.i[0]) : uint64_t(c.i[1]);
-        if (count <= 6)
-            for (const ResolvedTexture& r : g_textures.resolved)
-                if (r.texture)
-                    if (GpuImage* si = image_of(r.texture); si && si->uw) samples_wide = true;
-        if (!samples_wide) key.uw_x = 1.0f / uw_factor();
+        for (const ResolvedTexture& r : g_textures.resolved)
+            if (r.texture)
+                if (GpuImage* si = image_of(r.texture); si && si->uw && (si->sx != si->sy)) samples_wide = true;
+        if (!samples_wide) key.uw_x = g_uw.ax() < 1.0f ? g_uw.ax() : -g_uw.ay();
     }
-    if (uw_on()) {  // NX_UW_TRACE=<first draw>:<count>: draws (wide = a widened target)
+    if (g_uw.on) {  // NX_UW_TRACE=<first draw>:<count>: draws (wide = a scaled target)
         static const char* e = std::getenv("NX_UW_TRACE");
         static uint64_t from = 0, n = 0;
         static bool init = [&] { if (e) std::sscanf(e, "%lu:%lu", &from, &n); return true; }();
@@ -439,7 +450,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
             log("uwsamples:%s", smp.c_str());
             log("uwdraw %llu vs %s fs %s %s count %d tgt %ux%u fl %x fmt %x wide %d scaled %d dt %d dw %d bl %d vp %d %d %d %d", (unsigned long long)g_stats.total,
                 vs->hash.c_str(), fs ? fs->hash.c_str() : "-", indexed ? "idx" : "arr", indexed ? c.i[0] : c.i[1],
-                wi ? wi->width : 0, wi ? wi->height : 0, tx ? tx->flags : 0, wi ? wi->nvn_format : 0, g_uw_wide ? 1 : 0, key.uw_x > 0 ? 1 : 0,
+                wi ? wi->width : 0, wi ? wi->height : 0, tx ? tx->flags : 0, wi ? wi->nvn_format : 0, g_uw.on ? 1 : 0, key.uw_x != 0 ? 1 : 0,
                 g_state.depth.depth_test, g_state.depth.depth_write, g_state.color.blend_enable[0],
                 g_state.viewport[0], g_state.viewport[1], g_state.viewport[2], g_state.viewport[3]);
         }
@@ -477,16 +488,32 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     if (g_state.has_scissor)
         sc = {{std::max(0, g_state.scissor[0]), std::max(0, g_state.scissor[1])},
               {uint32_t(std::max(0, g_state.scissor[2])), uint32_t(std::max(0, g_state.scissor[3]))}};
-    if (g_uw_wide) {  // NX_ULTRAWIDE: the guest's 16:9 pixel spans, widened
+    if (g_uw.on) {  // the guest's pixel spans, scaled
         if (g_state.has_viewport) {
-            int32_t x = int32_t(vp.x), w = int32_t(vp.width);
-            uw_span(x, w, g_pass_extent.width);
-            vp.x = float(x), vp.width = float(w);
+            int32_t x = int32_t(vp.x), w = int32_t(vp.width), y = int32_t(vp.y), h = int32_t(vp.height);
+            uw_span(x, w, g_pass_extent.width, g_uw.sx);
+            uw_span(y, h, g_pass_extent.height, g_uw.sy);
+            vp.x = float(x), vp.width = float(w), vp.y = float(y), vp.height = float(h);
         }
         if (g_state.has_scissor) {
-            int32_t x = sc.offset.x, w = int32_t(sc.extent.width);
-            uw_span(x, w, g_pass_extent.width);
-            sc.offset.x = x, sc.extent.width = uint32_t(w);
+            int32_t x = sc.offset.x, w = int32_t(sc.extent.width), y = sc.offset.y, h = int32_t(sc.extent.height);
+            // A squeezed UI draw's scissor (a clipped list, the birthday wheel) follows its geometry: along the squeezed
+            // axis the guest's span is taken about the middle of the target, at the resolution part of the scale.
+            auto squeezed = [](int32_t& p, int32_t& n, uint32_t extent, float f, float s) {
+                const double guest = double(extent) / f;
+                if (p <= 0 && double(p) + n >= guest - 1.0) {  // all of it
+                    p = 0, n = int32_t(extent);
+                    return;
+                }
+                double p0 = (double(p) - guest * 0.5) * s + extent * 0.5, p1 = p0 + double(n) * s;
+                p0 = std::clamp(p0, 0.0, double(extent)), p1 = std::clamp(p1, 0.0, double(extent));
+                p = int32_t(std::lround(p0)), n = int32_t(std::lround(p1 - p0));
+            };
+            if (key.uw_x > 0) squeezed(x, w, g_pass_extent.width, g_uw.sx, g_uw.s());
+            else uw_span(x, w, g_pass_extent.width, g_uw.sx);
+            if (key.uw_x < 0) squeezed(y, h, g_pass_extent.height, g_uw.sy, g_uw.s());
+            else uw_span(y, h, g_pass_extent.height, g_uw.sy);
+            sc.offset.x = x, sc.extent.width = uint32_t(w), sc.offset.y = y, sc.extent.height = uint32_t(h);
         }
     }
     vp.y += vp.height, vp.height = -vp.height;
@@ -595,9 +622,10 @@ void draw_log_stats() {
         (unsigned long long)g_pass_ends[7]);
     Stats& t = g_stats;
     log("nvn draws: %llu recorded, %llu replayed:", (unsigned long long)recorded_draws(), (unsigned long long)t.total);
-    log("nvn draws: %llu total, %llu done, %llu no program, %llu no vertex shader, %llu no pipeline, %llu no indices",
-        (unsigned long long)t.total, (unsigned long long)t.done, (unsigned long long)t.no_program,
-        (unsigned long long)t.no_vertex, (unsigned long long)t.no_pipeline, (unsigned long long)t.no_indices);
+    log("nvn draws: %llu total, %llu done, %llu no program, %llu no vertex shader, %llu no pipeline, %llu no indices, "
+        "%llu missing a stage", (unsigned long long)t.total, (unsigned long long)t.done, (unsigned long long)t.no_program,
+        (unsigned long long)t.no_vertex, (unsigned long long)t.no_pipeline, (unsigned long long)t.no_indices,
+        (unsigned long long)t.missing_stage);
     log("nvn passes: %llu ended by a draw's texture uploads or layout changes, %llu by new targets, %llu dispatches",
         (unsigned long long)t.breaks_textures, (unsigned long long)t.breaks_targets, (unsigned long long)t.dispatches);
 }

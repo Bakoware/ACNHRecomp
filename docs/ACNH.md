@@ -83,3 +83,24 @@ Result of `spirv_harness --batch`: **6,200 distinct blocks (23,455 stages), 6,17
 - **Clock:** the game's day and season come from `nn::time` (the user system clock). The runtime answers it from the
   host clock (`runtime/src/svc_time.cpp`), so the island follows the computer's date and time.
 - **Online:** NEX/Pia/friends/bcat/nifm are answered offline (no network connection), as in Hades and Wonder.
+- **Touch / mouse:** the left mouse button over the picture is the touch screen (`runtime/src/hle_hid.cpp`), and a
+  click is answered by the game's two UI systems (`games/acnh/pointer.cpp`):
+  - `guiTouchManager::update()` (main+31c3b50), the game's own touch support, reads `GetTouchScreenStates<16>`: a
+    touch grabs the registered button under it (hit test main+31c3360 over two layers, the second one for windows)
+    and presses it when the touch ends with a sample carrying the End attribute (a touch that just disappears
+    cancels). It moves every touch 15 up (fingertip), which `touch_y_bias` undoes. Registered: the software keyboard
+    and the buttons of windows such as "Are you OK with ...?", which the game leaves out of reach (their window's
+    content node is disabled unless it scrolls); a hook before its hit tests (main+31c3f98) enables them.
+  - The layout framework's focus managers (main+3c48c60, one per page with a cursor: dialogue choices, the birthday
+    and character screens, menus) know no touch. A hook on their input (main+3c48c60) hit-tests the click against
+    their items' rectangles (target+0x14a0 centre, +0x14a8 size, layout units of 1920x1080 around the centre),
+    moves the cursor there as the game does (main+31017d0, main+3c48b68) and presses A for three frames. A page
+    whose cursor is not shown yet (all items disabled, the intro's style choice) gets an A first to show it. Clicks
+    the touch tree took are left alone. Moving the mouse (button up) over an item moves the cursor there without
+    A; a mouse that does not move leaves the cursor to the pad.
+  - The message window: its page turner (class main+0x49fc8f0) has button handlers (main+3c4b1fc; A and B) that
+    are on only while a page is fully shown and waits (the ▼). A click then, one no list item took, presses A
+    (hook on main+3c4b1fc). With no message waiting, a click in the world does nothing.
+  The controller's own touch pointer (main+2aeeefc, written to its input record +0x24/+0x28) is never read, and a
+  pointer handler of the layout framework (main+3c4be98) exists but nothing registers one. NX_TRACE_TOUCH=1 logs
+  touches, the items clicked or hovered and the ones a click missed; NX_INPUT `<frame>:M<x>x<y>` moves the mouse.

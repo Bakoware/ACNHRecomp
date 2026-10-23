@@ -302,6 +302,21 @@ FileCheck check_file(Kind kind, const std::string& path) {
             if (trim(line).rfind("header_key", 0) == 0) header = true;
         return header ? ok(Status::Ok, tr("launcher.ok.keys")) : ok(Status::Error, tr("launcher.err.keys"));
     }
+    if (kind == Kind::TitleKeys) {  // "<rights id> = <title key>", 32 hex digits each
+        std::ifstream f(u8(path));
+        std::string line;
+        auto hex32 = [](const std::string& v) {
+            return v.size() == 32 && std::all_of(v.begin(), v.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); });
+        };
+        for (int n = 0; n < 50 && std::getline(f, line); n++) {
+            size_t eq = line.find('=');
+            if (trim(line).empty()) continue;
+            if (eq != std::string::npos && hex32(trim(line.substr(0, eq))) && hex32(trim(line.substr(eq + 1))))
+                return ok(Status::Ok, tr("launcher.ok.title_keys"));
+            break;
+        }
+        return ok(Status::Error, tr("launcher.err.title_keys"));
+    }
     if (kind == Kind::Mod) {
         std::ifstream f(u8(path), std::ios::binary);
         char m[4] = {};
@@ -340,7 +355,7 @@ FileCheck check_file(Kind kind, const std::string& path) {
 
 bool classify_file(const std::string& path, Kind& kind) {
     std::string e = ext(path), name = lower(file_name(path));
-    if (name == "title.keys") return false;
+    if (name == "title.keys") return kind = Kind::TitleKeys, true;
     if (e == ".keys" || e == ".txt" || e == ".prod") return kind = Kind::Keys, true;
     if (e == ".zip") return kind = Kind::Mod, true;
     if (e != ".nsp" && e != ".xci" && e != ".nsz" && e != ".xcz") return false;
@@ -349,7 +364,10 @@ bool classify_file(const std::string& path, Kind& kind) {
     return true;
 }
 
-std::string find_keys(const std::vector<std::string>& near) {
+namespace {
+
+// Where prod.keys usually is, the first places first.
+std::vector<fs::path> key_places(const std::vector<std::string>& near) {
     std::vector<fs::path> c;
     const fs::path h = u8(home());
     c.push_back(h / ".switch" / "prod.keys");
@@ -380,8 +398,14 @@ std::string find_keys(const std::vector<std::string>& near) {
         c.push_back(d / "prod.keys");
         c.push_back(d.parent_path() / "prod.keys");
     }
+    return c;
+}
+
+}  // namespace
+
+std::string find_keys(const std::vector<std::string>& near) {
     std::error_code ec;
-    for (const fs::path& p : c)
+    for (const fs::path& p : key_places(near))
         if (fs::is_regular_file(p, ec)) return str(p);
     return "";
 }
@@ -391,6 +415,93 @@ std::string title_keys_for(const std::string& prod_keys) {
     fs::path t = u8(prod_keys).parent_path() / "title.keys";
     std::error_code ec;
     return fs::is_regular_file(t, ec) ? str(t) : std::string();
+}
+
+std::string short_dir(const std::string& path) {
+    std::string d = parent_dir(path), h = home();
+    if (!h.empty() && d.compare(0, h.size(), h) == 0 && (d.size() == h.size() || d[h.size()] == '/' || d[h.size()] == '\\'))
+        return "~" + d.substr(h.size());
+    return d;
+}
+
+namespace {
+
+// Whether a file's name makes it worth checking as `kind` (the pt-BR package: a .zip named like a translation).
+bool search_match(Kind kind, const std::string& path) {
+    std::string name = lower(file_name(path)), e = ext(path);
+    switch (kind) {
+        case Kind::Keys: return e == ".keys" && name != "title.keys";
+        case Kind::TitleKeys: return name == "title.keys";
+        case Kind::Mod:
+            if (e != ".zip") return false;
+            for (const char* w : {"ptbr", "pt-br", "pt_br", "pt br", "tradu", "portug", "brasil", "brazil"})
+                if (name.find(w) != std::string::npos) return true;
+            return false;
+        default: {
+            if (e != ".nsp" && e != ".xci" && e != ".nsz" && e != ".xcz") return false;
+            Kind k;
+            return classify_file(path, k) && k == kind;
+        }
+    }
+}
+
+}  // namespace
+
+std::vector<Found> search_files(Kind kind, const std::vector<std::string>& near) {
+    // {folder, how deep}: a few levels under the user's folders (Downloads/ACNH/...), only the top of the home folder.
+    std::vector<std::pair<fs::path, int>> roots;
+    std::error_code ec;
+    auto root = [&](const fs::path& p, int depth) {
+        if (p.empty() || !fs::is_directory(p, ec)) return;
+        for (const auto& [q, d] : roots)
+            if (fs::equivalent(p, q, ec)) return;
+        roots.emplace_back(p, depth);
+    };
+    for (SDL_Folder f : {SDL_FOLDER_DOWNLOADS, SDL_FOLDER_DESKTOP, SDL_FOLDER_DOCUMENTS})
+        if (const char* p = SDL_GetUserFolder(f)) root(u8(p), 3);
+    const fs::path h = u8(home());
+    for (const char* n : {"Downloads", "Desktop", "Documents"}) root(h / n, 3);
+    std::vector<std::string> near_files;
+    for (const std::string& n : near) {
+        if (is_file(n)) near_files.push_back(n);
+        root(is_dir(n) ? u8(n) : u8(n).parent_path(), 2);
+    }
+    root(h, 1);
+    std::vector<fs::path> files;
+    if (kind == Kind::Keys || kind == Kind::TitleKeys)  // the emulators' folders too
+        for (const fs::path& p : key_places(near_files))
+            files.push_back(kind == Kind::Keys ? p : p.parent_path() / "title.keys");
+    for (const auto& [r, depth] : roots) {
+        int budget = 20000;  // entries per folder: a huge Downloads folder costs a moment, never a hang
+        for (auto it = fs::recursive_directory_iterator(r, fs::directory_options::skip_permission_denied, ec);
+             it != fs::recursive_directory_iterator() && budget-- > 0; it.increment(ec)) {
+            if (ec) break;
+            const fs::path& p = it->path();
+            if (it->is_directory(ec)) {
+                std::string n = str(p.filename());
+                if (it.depth() + 1 >= depth || n.empty() || n[0] == '.' || n == "node_modules") it.disable_recursion_pending();
+                continue;
+            }
+            files.push_back(p);
+        }
+    }
+    std::vector<Found> out;
+    std::vector<fs::path> seen;
+    for (const fs::path& p : files) {
+        std::string s = str(p);
+        if (!fs::is_regular_file(p, ec) || !search_match(kind, s)) continue;
+        fs::path c = fs::weakly_canonical(p, ec);
+        if (std::find(seen.begin(), seen.end(), c) != seen.end()) continue;
+        seen.push_back(c);
+        out.push_back({s, kind, file_size(s), check_file(kind, s)});
+        if (out.size() >= 40) break;
+    }
+    // The usable ones first, then by name.
+    std::stable_sort(out.begin(), out.end(), [](const Found& a, const Found& b) {
+        if (a.check.status != b.check.status) return int(a.check.status) < int(b.check.status);
+        return lower(file_name(a.path)) < lower(file_name(b.path));
+    });
+    return out;
 }
 
 // ---- builds ---------------------------------------------------------------------------------------------------
@@ -489,11 +600,15 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
     r.push_back({"launcher.check.disk", free >= 30 * GB ? Status::Ok : free >= 20 * GB ? Status::Warning : Status::Error,
                  free >= 30 * GB ? trf("launcher.install.free", human_size(free))
                                  : trf("launcher.check.disk_low", human_size(free))});
+    // 4 GB is enough: the setup runs fewer compile jobs at once on less memory, so it only takes longer. A "4 GB"
+    // computer reports a little less (memory kept for the firmware or the integrated GPU).
     int ram_mb = SDL_GetSystemRAM();
     char ram[32];
     std::snprintf(ram, sizeof ram, "%.0f GB", ram_mb / 1024.0);
-    r.push_back({"launcher.check.ram", ram_mb >= 15 * 1024 ? Status::Ok : Status::Warning,
-                 ram_mb >= 15 * 1024 ? std::string(ram) : trf("launcher.check.ram_low", ram)});
+    r.push_back({"launcher.check.ram", ram_mb >= 3500 ? Status::Ok : Status::Warning,
+                 ram_mb >= 15 * 1024 ? std::string(ram)
+                 : ram_mb >= 3500    ? trf("launcher.check.ram_small", ram)
+                                     : trf("launcher.check.ram_low", ram)});
     return r;
 }
 

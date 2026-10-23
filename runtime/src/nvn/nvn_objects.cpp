@@ -300,7 +300,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
     t.pool = driver(c, "nvnTextureBuilderGetMemoryPool", {builder});
     t.offset = driver(c, "nvnTextureBuilderGetMemoryOffset", {builder});
     t.storage_size = texture_storage_size(c, builder);
-    uw_widen_texture(t);  // NX_ULTRAWIDE: screen-sized render targets get the display's width
+    uw_widen_texture(t);  // screen-sized render targets get the screen scale's size (nvn_ultrawide.cpp)
     if (old) {
         std::lock_guard lk(objects_lock());
         pool_textures()[t.pool].insert(guest);
@@ -456,6 +456,7 @@ uint64_t make_snapshot(uint64_t guest) {  // under objects_lock
     copy->target = t->target, copy->format = t->format, copy->flags = t->flags, copy->levels = t->levels;
     copy->samples = t->samples, copy->depth_stencil_mode = t->depth_stencil_mode;
     copy->width = t->width, copy->height = t->height, copy->depth = t->depth, copy->stride = t->stride;
+    copy->uw = t->uw, copy->base_w = t->base_w, copy->base_h = t->base_h, copy->uw_gen = t->uw_gen;
     copy->pool = t->pool, copy->offset = t->offset, copy->storage_size = t->storage_size;
     copy->memory = t->memory, copy->gpu = t->gpu, copy->block_height_gobs = t->block_height_gobs;
     std::memcpy(copy->swizzle, t->swizzle, sizeof copy->swizzle);
@@ -561,8 +562,15 @@ void TextureFlushTexels(CPU&) {}  // coherent: the writes above are what matters
         auto* t = get<Texture>(c.x[0]);       \
         c.x[0] = t ? uint64_t(t->field) : 0;  \
     }
-NX_TEXTURE_GETTER(TextureGetWidth, width)
-NX_TEXTURE_GETTER(TextureGetHeight, height)
+// A screen target the runtime resized (nvn_ultrawide.cpp) keeps the game's size as far as the game can tell.
+void TextureGetWidth(CPU& c) {
+    auto* t = get<Texture>(c.x[0]);
+    c.x[0] = t ? uint64_t(t->uw ? t->base_w : t->width) : 0;
+}
+void TextureGetHeight(CPU& c) {
+    auto* t = get<Texture>(c.x[0]);
+    c.x[0] = t ? uint64_t(t->uw ? t->base_h : t->height) : 0;
+}
 NX_TEXTURE_GETTER(TextureGetDepth, depth)
 NX_TEXTURE_GETTER(TextureGetFormat, format)
 NX_TEXTURE_GETTER(TextureGetTarget, target)

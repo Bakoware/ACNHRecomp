@@ -1,5 +1,6 @@
 // Animal Crossing: New Horizons (01006F8002326000, 3.0.2): what the shared runtime needs to know about the game.
 // The game draws through NVN (docs/upstream/NVN.md); what we know about it is in docs/ACNH.md.
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
@@ -10,7 +11,10 @@ namespace nx {
 
 const game::Info game::kInfo = {"acnh", "Animal Crossing: New Horizons", 0x01006F8002326000ull,
                                 "io.github.acnhrecomp", "private/acnh",
-                                0 /* main.npdm: no system resource */};
+                                0 /* main.npdm: no system resource */,
+                                // guiTouchManager::update (main+31c3b50) moves every touch 15 up: the UI then hits
+                                // what the mouse points at.
+                                15};
 
 namespace {
 
@@ -65,6 +69,26 @@ void bind_clears() {
     setenv("NX_CLEAR_ONCE_AT", "37fb744", 0);
 #endif
 }
+
+// The job workers (sead threads made by the factory at main+6c5b20, vtable main+4816770) register with Havok on a
+// message (calc_, main+6d6514): if the Phive singleton exists (main+5a05378), they call its system's thread setup
+// ([[[g]+8]+8]->vtable[0x20]) and keep the answer at this+0x18c (-1 until then, so the next message retries). The
+// main thread publishes the singleton (main+3dfc120, in main+3dfc044) and only then builds the system (g->init,
+// main+3dfc2a8: the 32 MB PhiveSystemHeap and Havok's memory router, ~3 ms here) and stores it at g+8. A worker
+// that wakes in between loaded g+8 = null and faulted on address 8 (1 run in ~12, while the Nook Inc. scene loads).
+// The wakeups come from the job queue (TrySendMessageQueue at main+3e42c08: the main thread and the workers wake
+// idle workers); on the console the workers own cores 1 and 2 and a stale wakeup is handled within microseconds, here
+// a host thread under load is woken milliseconds late and lands in that window. Hooked on the null check
+// (cbz x8 at main+6d659c, x8 = g): a half-built singleton counts as no singleton, as the game's own physics step
+// already does (main+3e01a98 tests g+8).
+static void phive_half_built(CPU& c) {
+    if (c.x[8] && ld<uint64_t>(c.x[8] + 8) == 0) {
+        c.x[8] = 0;
+        static std::atomic<int> seen{0};
+        if (seen++ < 4) log("acnh: a job worker woke while the Phive singleton is half built: its Havok setup waits");
+    }
+}
+NX_HOOK(0x6d659c, phive_half_built);
 
 void game::after_init() {
     widen_sys_budget();

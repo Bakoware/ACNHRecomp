@@ -67,7 +67,10 @@ std::string game_language(const std::string& v) {
 std::string handheld(const std::string& v) { return v == "handheld" ? "1" : ""; }
 std::string fsr(const std::string& v) { return v == "fsr" ? "1" : ""; }
 std::string fps_cap(const std::string& v) { return v == "30" ? "30" : ""; }
-std::string interval(const std::string& v) { return v == "60" ? "1" : ""; }
+// "60native": the game's logic steps at 60 Hz too (games/acnh/native60.cpp, docs/NATIVE60.md).
+std::string interval(const std::string& v) { return v == "60" || v == "60native" ? "1" : ""; }
+std::string native60(const std::string& v) { return v == "60native" ? "1" : ""; }
+std::string framegen(const std::string& v) { return v == "builtin" ? "1" : ""; }  // lsfg-vk is a Vulkan layer of its own
 // The screen's 0..100% sharpness -> FSR's RCAS attenuation in stops (0 sharpest, 2 softest).
 std::string fsr_sharpness(const std::string& v) {
     if (v.empty()) return "";
@@ -76,6 +79,7 @@ std::string fsr_sharpness(const std::string& v) {
     return b;
 }
 
+// video.aspect and video.resolution are read live (nvn_ultrawide.cpp); NX_ULTRAWIDE / NX_RENDER_HEIGHT override them.
 const Mapping kMappings[] = {
     {"game.language", "NX_LANGUAGE", game_language, true},
     {"video.fullscreen", "NX_FULLSCREEN", on_off, false},
@@ -83,10 +87,11 @@ const Mapping kMappings[] = {
     {"video.mode", "NX_HANDHELD", handheld, true},
     {"video.upscaler", "NX_FSR", fsr, true},
     {"video.fsr_sharpness_pct", "NX_FSR_SHARP", fsr_sharpness, true},
-    {"video.aspect", "NX_ULTRAWIDE", auto_empty, true},
     {"video.gpu", "NX_GPU", auto_empty, true},
     {"video.frame_rate", "NX_PRESENT_INTERVAL", interval, true},
+    {"video.frame_rate", "NX_NATIVE60", native60, true},
     {"video.frame_cap", "NX_FPS_CAP", fps_cap, true},
+    {"video.frame_gen", "NX_FRAMEGEN", framegen, true},
     {"audio.reverb", "NX_AUDIO_REVERB", off_is_zero, false},  // also read live (hle_audio.cpp)
 };
 

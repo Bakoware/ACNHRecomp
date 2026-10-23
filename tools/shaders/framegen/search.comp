@@ -1,0 +1,108 @@
+#version 450
+// Frame generation: motion vectors, by symmetric block matching around the frame halfway between the two (a vector v
+// at x matches prev(x - v/2) with cur(x + v/2)), so the in-between frame needs no splatting and has no holes.
+// A cell's cost is the sum of absolute luma differences over a 4x4 patch of luma texels around its centre (bilinear:
+// vectors are sub-texel), less their mean (fades and flashes still match), plus a small pull towards the predicted
+// vector, so flat areas keep their neighbours' motion.
+// Mode 0 (coarsest level): every whole-texel vector within +-radius, and the last frame's vector. Mode 1: the coarser
+// field's vectors at this cell and its four neighbours, zero and the last frame's. Mode 2 (a last refinement on the
+// same grid): the cell's own vector, zero and the last frame's. Then the best is refined by steps of `first` luma texels, halved down to `last`. Vectors are in pixels of the full
+// image; out: (vector, cost, mean luma change).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D lprev;
+layout(set = 0, binding = 1) uniform sampler2D lcur;
+layout(set = 0, binding = 2) uniform sampler2D coarse;    // mode 1: the coarser field
+layout(set = 0, binding = 3) uniform sampler2D temporal;  // the last frame's final field
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D dst;
+layout(push_constant) uniform P {
+    ivec4 size;  // x: mode (0, 1, 2), y: radius (mode 0), z: the last frame's field is valid
+    vec4 a;      // full pixels per: x a cell of this field, y a luma texel, z a coarser cell, w a temporal cell
+    vec4 b;      // x: the first refinement step, y: the last (luma texels); z: 1 = 2x2 taps
+} p;
+
+vec2 inv;
+vec2 lc;  // the cell's centre in luma texels
+float lscale;
+vec2 pred;
+vec2 best_v;
+float best_c;
+
+bool coarse_taps;
+float dmean, best_dm;  // the patch's mean luma change (cur - prev): a fade, which the cost leaves out
+
+// Mean-removed: the differences' spread around their mean, so a fade or a flash still matches.
+float sad(vec2 v) {
+    vec2 h = 0.5 * v / lscale;
+    float d[16];
+    int n = coarse_taps ? 4 : 16;
+    float m = 0.0;
+    if (coarse_taps) {  // the same 4x4 texels as 2x2 bilinear taps (means of 2x2), a quarter of the samples
+        for (int k = 0; k < 4; k++) {
+            vec2 o = vec2(float(k & 1) * 2.0 - 1.0, float(k >> 1) * 2.0 - 1.0);
+            d[k] = texture(lcur, (lc + o + h) * inv).r - texture(lprev, (lc + o - h) * inv).r;
+            m += d[k];
+        }
+    } else {
+        for (int k = 0; k < 16; k++) {
+            vec2 o = vec2(float(k & 3) - 1.5, float(k >> 2) - 1.5);
+            d[k] = texture(lcur, (lc + o + h) * inv).r - texture(lprev, (lc + o - h) * inv).r;
+            m += d[k];
+        }
+    }
+    m /= float(n);
+    float s = 0.0;
+    for (int k = 0; k < n; k++) s += abs(d[k] - m);
+    dmean = m;
+    return s * (16.0 / float(n));
+}
+
+void try_v(vec2 v) {
+    float c = sad(v) + 0.004 * length(v - pred) / lscale;
+    if (c < best_c) best_c = c, best_v = v, best_dm = dmean;
+}
+
+vec2 fetch(sampler2D f, vec2 full_pos, float fscale, ivec2 off) {
+    ivec2 sz = textureSize(f, 0);
+    ivec2 q = clamp(ivec2(floor(full_pos / fscale)) + off, ivec2(0), sz - 1);
+    return texelFetch(f, q, 0).xy;
+}
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(q, imageSize(dst)))) return;
+    inv = 1.0 / vec2(textureSize(lprev, 0));
+    vec2 full = (vec2(q) + 0.5) * p.a.x;
+    lscale = p.a.y;
+    coarse_taps = p.b.z != 0.0;
+    lc = full / lscale;
+    best_c = 1e30;
+    best_v = vec2(0.0);
+    bool temporal_ok = p.size.z != 0;
+    vec2 tv = temporal_ok ? fetch(temporal, full, p.a.w, ivec2(0)) : vec2(0.0);
+    if (p.size.x == 0) {
+        pred = vec2(0.0);
+        int r = p.size.y;
+        for (int y = -r; y <= r; y++)
+            for (int x = -r; x <= r; x++) try_v(vec2(x, y) * lscale);
+        if (temporal_ok) try_v(tv);
+    } else {
+        pred = fetch(coarse, full, p.a.z, ivec2(0));
+        try_v(pred);
+        try_v(vec2(0.0));
+        if (p.size.x == 1) {
+            try_v(fetch(coarse, full, p.a.z, ivec2(-1, 0)));
+            try_v(fetch(coarse, full, p.a.z, ivec2(1, 0)));
+            try_v(fetch(coarse, full, p.a.z, ivec2(0, -1)));
+            try_v(fetch(coarse, full, p.a.z, ivec2(0, 1)));
+        }
+        if (temporal_ok) try_v(tv);
+    }
+    // Modes 0 and 1: the first step tries the 8 neighbours, the finer ones a diamond (4). Mode 2: diamonds only.
+    for (float step = p.b.x; step >= p.b.y * 0.99; step *= 0.5) {
+        vec2 c = best_v, d = vec2(step * lscale, 0.0);
+        try_v(c + d.xy), try_v(c - d.xy), try_v(c + d.yx), try_v(c - d.yx);
+        if (step == p.b.x && p.size.x < 2)
+            try_v(c + d.xx), try_v(c - d.xx), try_v(c + vec2(d.x, -d.x)), try_v(c - vec2(d.x, -d.x));
+    }
+    imageStore(dst, q, vec4(best_v, best_c, best_dm));
+}

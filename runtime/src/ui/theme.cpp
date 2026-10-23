@@ -39,6 +39,20 @@ std::string find_font(bool cjk, const std::string& user_font) {
     return "";
 }
 
+// A font with Cyrillic and the rest of the extended ranges, merged under the menu font: rounded fonts such as
+// Quicksand have no Cyrillic, which then showed as "?" in Russian. Glyphs the menu font has keep its look.
+std::string find_cover_font(const std::string& latin) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* p :
+         {"/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf", "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+          "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+          "C:\\Windows\\Fonts\\segoeuib.ttf", "C:\\Windows\\Fonts\\arialbd.ttf"})
+        if (latin != p && fs::is_regular_file(fs::u8path(p), ec)) return p;
+    return "";
+}
+
 }  // namespace
 
 float theme_scale(float width, float height) {
@@ -55,7 +69,7 @@ ThemeFonts theme_build_fonts(float scale, const std::string& user_font) {
     bool cjk = lang == "ja" || lang == "ko" || lang == "zh-CN" || lang == "zh-TW";
     // The CJK font is merged in every language: in full for ja/ko/zh, else only for the languages' own names in the
     // language lists (日本語, 한국어, 中文).
-    std::string latin = find_font(false, user_font), extra = find_font(true, "");
+    std::string latin = find_font(false, user_font), extra = find_font(true, ""), cover = find_cover_font(latin);
     static ImVector<ImWchar> ranges;  // Latin + Latin-1/Extended + Cyrillic + general punctuation + arrows/dashes
     ranges.clear();
     ImFontGlyphRangesBuilder rb;
@@ -83,6 +97,12 @@ ThemeFonts theme_build_fonts(float scale, const std::string& user_font) {
             ImFontConfig d;
             d.SizePixels = px;
             f = io.Fonts->AddFontDefault(&d);
+        }
+        if (f && !latin.empty() && !cover.empty()) {
+            ImFontConfig m;
+            m.MergeMode = true;
+            m.OversampleH = 2;
+            io.Fonts->AddFontFromFileTTF(cover.c_str(), px, &m, ranges.Data);
         }
         if (!extra.empty()) {
             ImFontConfig m;

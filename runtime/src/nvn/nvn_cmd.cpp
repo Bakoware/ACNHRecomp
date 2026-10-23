@@ -319,12 +319,11 @@ bool trace_record() {
 // target was already cleared that frame (ACNH's clear-on-bind, main+37fb390: with every clear kept, a re-bind wiped
 // the depth pre-pass and the colour pass painted the back wall over the characters). Storage, not the NVNtexture:
 // the game re-initializes its texture structs many times a frame.
+// Decided at replay (draw_clear, nvn_clears.cpp), where frames are the presents in queue order: the clear is recorded
+// with kClearOnce. Deciding it here by g_frame was wrong: the game records on its render threads while the main
+// thread presents, so a frame's later re-bind (the water's pass) often came just after g_frame moved on, counted as
+// the next frame's first clear and wiped the depth: the sea drawn over the pier, the player, the plaza.
 namespace {
-std::mutex g_once_lock;
-std::map<uint64_t, std::pair<uint64_t, uint64_t>> g_bound;  // command buffer -> (colour 0, depth) as recorded
-std::set<uint64_t> g_cleared;                               // storage cleared this frame (low bit: depth)
-uint64_t g_cleared_frame = ~0ull;
-
 bool clear_once_site(uint64_t lr) {
     static const std::vector<uint64_t> sites = [] {
         std::vector<uint64_t> v;
@@ -342,24 +341,6 @@ bool clear_once_site(uint64_t lr) {
     const LoadedModule* m = module_at(lr);
     return m && std::find(sites.begin(), sites.end(), lr - m->base) != sites.end();
 }
-
-// True when this clear is a repeat within the frame (to be dropped).
-bool clear_repeat(uint64_t cmdbuf, bool depth, uint64_t lr) {
-    if (!clear_once_site(lr)) return false;
-    std::lock_guard lk(g_once_lock);
-    uint64_t frame = g_frame.load(std::memory_order_relaxed);
-    if (frame != g_cleared_frame) g_cleared.clear(), g_cleared_frame = frame;
-    auto it = g_bound.find(cmdbuf);
-    if (it == g_bound.end()) return false;
-    Texture* t = get<Texture>(depth ? it->second.second : it->second.first);
-    if (!t || !t->memory) return false;
-    return !g_cleared.insert(t->memory | (depth ? 1 : 0)).second;
-}
-
-void note_bound(uint64_t cmdbuf, uint64_t color0, uint64_t depth) {
-    std::lock_guard lk(g_once_lock);
-    g_bound[cmdbuf] = {color0, depth};
-}
 }  // namespace
 
 void SetRenderTargets(CPU& c) {
@@ -373,7 +354,6 @@ void SetRenderTargets(CPU& c) {
     cmd.n = n;
     for (uint32_t k = 0; k < n && c.x[2]; k++) cmd.a[k] = ld<uint64_t>(c.x[2] + 8 * k);
     cmd.a[8] = c.x[4];  // depth/stencil
-    note_bound(c.x[0], n ? cmd.a[0] : 0, c.x[4]);
     // The views pick the level and layer rendered to (a bloom chain renders each mip of one texture in turn).
     TargetViews tv;
     for (uint32_t k = 0; k < n && c.x[3]; k++) {
@@ -399,11 +379,11 @@ void ClearColor(CPU& c) {
             if (m && c.x[30] - m->base == at) return;
         }
     }
-    if (uint32_t(c.x[1]) == 0 && clear_repeat(c.x[0], false, c.x[30])) return;
     Cmd cmd{Cmd::ClearColor};
     cmd.n = uint32_t(c.x[1]);
     if (c.x[2]) std::memcpy(cmd.f, reinterpret_cast<const void*>(c.x[2]), 16);
-    cmd.mask = uint32_t(c.x[3]);
+    cmd.mask = uint32_t(c.x[3]) & 0xF;
+    if (cmd.n == 0 && clear_once_site(c.x[30])) cmd.mask |= kClearOnce;
     record(c.x[0], cmd);
 }
 
@@ -420,10 +400,10 @@ void ClearDepthStencil(CPU& c) {
             if (m && c.x[30] - m->base == at) return;
         }
     }
-    if (clear_repeat(c.x[0], true, c.x[30])) return;
     Cmd cmd{Cmd::ClearDepthStencil};
     cmd.f[0] = c.v[0].f32[0];
     cmd.mask = (c.x[1] & 1) | ((uint32_t(c.x[3]) & 0xFF) << 8);  // depth mask, stencil mask
+    if (clear_once_site(c.x[30])) cmd.mask |= kClearOnce;
     cmd.i[0] = int32_t(c.x[2]);
     record(c.x[0], cmd);
 }

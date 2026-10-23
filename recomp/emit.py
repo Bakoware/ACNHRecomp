@@ -133,6 +133,10 @@ class Emitter(Sdk20Ops, ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
         # Debug: NX_TRACE_SP=0xADDR,... logs SP after every instruction that changes it in those functions.
         import os
         self.trace_sp = {int(x, 16) for x in os.environ.get("NX_TRACE_SP", "").split(",") if x}
+        # Instruction addresses where the runtime gets a call first (--hooks): nx_hook(c, pc) runs with the guest
+        # registers up to date in the context and may change them (a game's NX_HOOK, runtime.h). Declared in the
+        # functions that have one, so adding hooks does not touch cpu.h (which every generated file includes).
+        self.hooks = set()
         self.unhandled = collections.Counter()
         self.handled = 0
 
@@ -250,11 +254,15 @@ class Emitter(Sdk20Ops, ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
                 self.unhandled[i.mnemonic] += 1
                 txt = f"{i.mnemonic} {i.op_str}".replace('"', "'")
                 stmt = f"nx::unimpl(c, {B} + {a:#x}ull, \"{txt}\"); // {e}"
+            if a in self.hooks:
+                stmt = f"nx_hook(c, {B} + {a:#x}ull); {stmt}"
             if f.start in self.trace_sp and ("sp" in i.op_str.split(",")[0] or "[sp" in i.op_str and i.writeback):
                 stmt += f" nx::trace_sp(c, {B} + {a:#x}ull);"
             body.append((a, f"{stmt} // {i.mnemonic} {i.op_str}"))
             last_term = i.mnemonic in ("b", "br", "ret", "udf", "brk") or stmt.endswith("return; }")
         out = [f"void {self.fn(f.start)}(nx::CPU& NX_RESTRICT c) {{"]
+        if any(f.start <= a < f.end for a in self.hooks):
+            out.append("    void nx_hook(nx::CPU&, uint64_t);")
         sj = self.setjmp_sites
         if sj:
             # Functions that call setjmp run inside a try: a longjmp on one of their buffers resumes after the call.

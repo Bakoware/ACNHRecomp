@@ -69,6 +69,7 @@ std::map<std::string, fs::path> g_mounts;
 struct File {
     FILE* f;
     std::string path;
+    uint64_t written = 0;  // bytes the game wrote through this handle (logged at the close: saves)
     File(FILE* file, std::string p) : f(file), path(std::move(p)) {}
     File(const File&) = delete;  // owns the FILE: one instance only
     File& operator=(const File&) = delete;
@@ -215,7 +216,18 @@ void Unmount(CPU& c) {
     c.x[0] = kOk;
 }
 
-void Commit(CPU& c) { c.x[0] = kOk; }
+// Saves are logged (rare, small): what the game created, wrote, renamed and committed, and each failure.
+void Commit(CPU& c) {  // (const char* mount[, const CommitOption&])
+    log("fs: save: Commit(%s)", cstr(c.x[0]).c_str());
+    c.x[0] = kOk;
+}
+
+void CommitMultiple(CPU& c) {  // (const char* const* mounts, int count)
+    std::string names;
+    for (int k = 0; k < int(c.x[1]) && k < 8; k++) names += (k ? ", " : "") + cstr(ld<uint64_t>(c.x[0] + 8ull * k));
+    log("fs: save: Commit(%s)", names.c_str());
+    c.x[0] = kOk;
+}
 
 // ---- device save data (ACNH: the island is one save for the whole console, not per user) ----
 // user/device_save. Its size: what the game asked for last (ExtendDeviceSaveData), kept in user/device_save.size; until
@@ -269,6 +281,7 @@ void CreateFile(CPU& c) {
     fs::path p = resolve(cstr(c.x[0]));
     int64_t size = int64_t(c.x[1]);
     if (p.empty() || !fs::exists(p.parent_path())) {
+        log("fs: save: CreateFile(%s, %lld): no parent directory", cstr(c.x[0]).c_str(), (long long)size);
         c.x[0] = kPathNotFound;
         return;
     }
@@ -284,14 +297,18 @@ void CreateFile(CPU& c) {
         }
         fclose(f);
     }
+    log("fs: save: CreateFile(%s, %lld)%s", cstr(c.x[0]).c_str(), (long long)size, f ? "" : " failed on the host");
     c.x[0] = f ? kOk : kPathNotFound;
 }
 
 void DeleteFile(CPU& c) {
     std::lock_guard lk(g_fs);
-    fs::path p = resolve(cstr(c.x[0]));
+    std::string guest = cstr(c.x[0]);
+    fs::path p = resolve(guest);
     std::error_code ec;
-    c.x[0] = !p.empty() && fs::remove(p, ec) ? kOk : kPathNotFound;
+    bool ok = !p.empty() && fs::remove(p, ec);
+    log("fs: save: DeleteFile(%s)%s", guest.c_str(), ok ? "" : ": not found");
+    c.x[0] = ok ? kOk : kPathNotFound;
 }
 
 void CreateDirectory(CPU& c) {
@@ -306,7 +323,9 @@ void CreateDirectory(CPU& c) {
         return;
     }
     std::error_code ec;
-    c.x[0] = fs::create_directory(p, ec) ? kOk : kPathNotFound;
+    bool ok = fs::create_directory(p, ec);
+    log("fs: save: CreateDirectory(%s)%s", cstr(c.x[0]).c_str(), ok ? "" : ": failed");
+    c.x[0] = ok ? kOk : kPathNotFound;
 }
 
 void GetEntryType(CPU& c) {  // (DirectoryEntryType* out, path)
@@ -350,7 +369,7 @@ void OpenFile(CPU& c) {  // (FileHandle* out, path, int mode: 1 read, 2 write, 4
     std::error_code ec;
     if (p.empty() || !fs::is_regular_file(p, ec)) {
         note_open("OpenFile", guest, p.empty() ? "unknown mount" : "not found");
-        if (trace_fs()) log("fs: OpenFile(%s) not found", guest.c_str());
+        if (trace_fs() || (mode & 2)) log("fs: OpenFile(%s, %d) not found", guest.c_str(), mode);
         c.x[0] = kPathNotFound;
         return;
     }
@@ -377,7 +396,11 @@ std::shared_ptr<File> open_file(uint64_t h) {
 
 void CloseFile(CPU& c) {
     std::lock_guard lk(g_fs);
-    g_files.erase(c.x[0]);
+    auto it = g_files.find(c.x[0]);
+    if (it == g_files.end()) return;
+    if (it->second->written)
+        log("fs: save: wrote %llu bytes to %s", (unsigned long long)it->second->written, it->second->path.c_str());
+    g_files.erase(it);
 }
 
 void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
@@ -443,8 +466,12 @@ void WriteFile(CPU& c) {  // (FileHandle, s64 off, const void* buf, size_t size,
     }
     std::lock_guard lk(g_fs);
     plat::fseek64(file->f, int64_t(c.x[1]), SEEK_SET);
-    fwrite(reinterpret_cast<const void*>(c.x[2]), 1, c.x[3], file->f);
+    size_t n = fwrite(reinterpret_cast<const void*>(c.x[2]), 1, c.x[3], file->f);
     fflush(file->f);  // positional reads bypass the FILE buffer (saves only: rare and small)
+    file->written += n;
+    if (n != c.x[3])
+        log("fs: save: WriteFile(%s) wrote %zu of %llu bytes (errno %d)", file->path.c_str(), n,
+            (unsigned long long)c.x[3], errno);
     c.x[0] = kOk;
 }
 
@@ -636,6 +663,7 @@ void RenameDirectory(CPU& c) {  // (const char* from, const char* to)
         return;
     }
     fs::rename(a, b, ec);
+    log("fs: save: RenameDirectory(%s, %s)%s", cstr(c.x[0]).c_str(), cstr(c.x[1]).c_str(), ec ? ": failed" : "");
     c.x[0] = ec ? kPathNotFound : kOk;
 }
 
@@ -658,7 +686,7 @@ NX_HLE("_ZN2nn2fs19MountDeviceSaveDataEPKc", MountDeviceSaveData);
 NX_HLE("_ZN2nn2fs21GetDeviceSaveDataSizeEPlS1_", GetDeviceSaveDataSize);
 NX_HLE("_ZN2nn2fs20ExtendDeviceSaveDataEll", ExtendDeviceSaveData);
 NX_HLE("_ZN2nn2fs22GetSaveDataRestoreFlagEPbPKc", GetSaveDataRestoreFlag);
-NX_HLE("_ZN2nn2fs6CommitEPKPKci", Commit);
+NX_HLE("_ZN2nn2fs6CommitEPKPKci", CommitMultiple);
 NX_HLE("_ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE", Commit);
 NX_HLE("_ZN2nn2fs25CleanDirectoryRecursivelyEPKc", CleanDirectoryRecursively);
 NX_HLE("_ZN2nn2fs15RenameDirectoryEPKcS2_", RenameDirectory);

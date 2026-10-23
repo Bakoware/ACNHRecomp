@@ -321,13 +321,13 @@ bool frame_dump_record(VkCommandBuffer cb, GpuImage& img) {
     return true;
 }
 
-void frame_dump_write(const GpuImage& img, uint64_t frame) {
+void frame_dump_write(const GpuImage& img, uint64_t frame, const char* suffix) {
     void* p = nullptr;
     if (p_vkMapMemory(vk_device(), g_readback.memory, 0, VK_WHOLE_SIZE, 0, &p) != VK_SUCCESS) return;
     std::string dir = plat::data_root() + "/frames";
     plat::make_dirs(dir);
     char name[64];
-    std::snprintf(name, sizeof name, "/%05llu.ppm", (unsigned long long)frame);
+    std::snprintf(name, sizeof name, "/%05llu%s.ppm", (unsigned long long)frame, suffix);
     if (FILE* f = plat::fopen_utf8(dir + name, "wb")) {
         std::fprintf(f, "P6\n%u %u\n255\n", img.width, img.height);
         const uint8_t* px = static_cast<const uint8_t*>(p);

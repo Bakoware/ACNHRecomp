@@ -211,8 +211,14 @@ void page_video() {
                {"1920x1080", "1920 × 1080"}, {"2560x1440", "2560 × 1440"}, {"3840x2160", "3840 × 2160"}},
               w);
     });
-    row("video.render", nullptr, [&](float w) {
+    row("video.mode", nullptr, [&](float w) {
         combo("video.mode", "docked", {{"docked", tr("video.render.docked")}, {"handheld", tr("video.render.handheld")}}, w);
+    });
+    row("video.resolution", "video.resolution.desc", [&](float w) {
+        combo("video.resolution", "native",
+              {{"native", tr("video.resolution.native")}, {"540", "540p"}, {"720", "720p"}, {"900", "900p"},
+               {"1080", "1080p"}, {"1440", "1440p"}, {"2160", "2160p (4K)"}, {"window", tr("video.resolution.window")}},
+              w);
     });
     row("video.upscaler", nullptr, [&](float w) {
         combo("video.upscaler", "linear", {{"linear", tr("video.upscaler.linear")}, {"fsr", tr("video.upscaler.fsr")}}, w);
@@ -221,20 +227,21 @@ void page_video() {
         row("video.sharpness", nullptr, [&](float w) { slider("video.fsr_sharpness_pct", 0, 100, 80, "%d%%", w); });
     row("video.aspect", "video.aspect.desc", [&](float w) {
         combo("video.aspect", "16:9",
-              {{"16:9", tr("video.aspect.original")}, {"auto", tr("common.auto")}, {"16:10", "16:10"}, {"21:9", "21:9"},
-               {"32:9", "32:9"}, {"20:9", trf("video.aspect.phone", "20:9")}, {"19.5:9", trf("video.aspect.phone", "19.5:9")},
-               {"4:3", "4:3"}},
+              {{"16:9", tr("video.aspect.original")}, {"auto", tr("common.auto")}, {"16:10", "16:10"}, {"4:3", "4:3"},
+               {"21:9", "21:9"}, {"32:9", "32:9"}, {"20:9", trf("video.aspect.phone", "20:9")},
+               {"19.5:9", trf("video.aspect.phone", "19.5:9")}},
               w);
     });
     row("video.framerate", "video.framerate.desc", [&](float w) {
         combo("video.frame_rate", "30", {{"30", tr("video.framerate.30")}, {"60", tr("video.framerate.60")}}, w);
     });
+    // Built-in (nvn_framegen.cpp) always; lsfg-vk when it is installed (or already chosen).
     bool lsfg = lsfg_available();
-    row("video.framegen", lsfg ? "video.framegen.desc" : "video.framegen.missing", [&](float w) {
-        ImGui::BeginDisabled(!lsfg);
-        combo("video.frame_gen", "off", {{"off", tr("video.framegen.off")}, {"lsfg", tr("video.framegen.lsfg")}}, w);
-        ImGui::EndDisabled();
-    });
+    std::string fg = config_get("video.frame_gen", "off");
+    Choices fg_choices = {{"off", tr("video.framegen.off")}, {"builtin", tr("video.framegen.builtin")}};
+    if (lsfg || fg == "lsfg") fg_choices.push_back({"lsfg", tr("video.framegen.lsfg")});
+    const char* fg_desc = fg == "lsfg" ? (lsfg ? "video.framegen.desc" : "video.framegen.missing") : "video.framegen.builtin.desc";
+    row("video.framegen", fg_desc, [&](float w) { combo("video.frame_gen", "off", fg_choices, w); });
     row("video.gpu", nullptr, [&](float w) {
         combo("video.gpu", "auto",
               {{"auto", tr("common.auto")}, {"discrete", tr("video.gpu.discrete")}, {"integrated", tr("video.gpu.integrated")}}, w);
@@ -472,6 +479,9 @@ bool settings_draw(float scale, ImFont* title) {
     g_scale = scale;
     static const bool cycle = std::getenv("NX_UI_CYCLE") != nullptr;  // tests: every page in turn, 10 s each
     if (cycle) g_page = int(double(plat::monotonic_ns()) / 1e10) % kPageCount;
+    static const char* page = std::getenv("NX_UI_PAGE");  // tests: that page (0 game, 1 video, ...) when opened
+    static bool paged = false;
+    if (page && !paged) g_page = std::clamp(std::atoi(page), 0, kPageCount - 1), paged = true;
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 ds = io.DisplaySize;
     bool portrait = ds.x < ds.y * 1.2f;

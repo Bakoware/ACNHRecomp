@@ -4,7 +4,8 @@
 #   usage: tools/extract_shaders.sh [game dir]            (default: private/acnh)
 #   env:   PY=<python with zstandard>   (default: private/venv/bin/python, else python3)
 #          JOBS=<parallel extractions>  (default: half the cores, at least 1)
-#          FULL=1                       also sweep Model/ (61k files; nothing found there on 3.0.2)
+#          FULL=1                       also extract every Model/ container whole (61k files; the blocks only
+#                                       models have are extracted anyway, by model_shaders.py)
 # Output: <game dir>/shaders_extracted/<group>/..., one group per container.
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -39,4 +40,7 @@ done
 for l in "$O"/*.log; do [ -d "${l%.log}" ] || rm -f "$l"; done
 # The code blocks embedded in `main` that no container holds. After the others: it skips what they already have.
 "$PY" tools/maxwell/exefs_shaders.py "$W/analysis/main.bin" --extract "$O/exefs" > "$O/exefs.log" 2>&1 || echo "FAIL exefs"
+# The variations only models carry (their own Park_UBER.bfsha): without them some materials draw depth only, black
+# (character faces, the Nook Stop). Last: it keeps only the blocks no other group has. ~15 min for 60k archives.
+"$PY" tools/maxwell/model_shaders.py "$R/Model" "$O" --jobs "$JOBS" > "$O/model.log" 2>&1 || echo "FAIL model"
 echo "groups: $(ls -d "$O"/*/ | wc -l)  blocks: $(find "$O" -name '*.code.bin' -o -name 'code_*.bin' | wc -l)"

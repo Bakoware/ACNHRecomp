@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 
 #include "nvn_draw_state.h"
 #include "nvn_ultrawide.h"
@@ -204,6 +205,17 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     GpuImage* img = guest ? image_of(guest) : nullptr;
     if (!img || color != (img->aspect == VK_IMAGE_ASPECT_COLOR_BIT)) return;
     if (color && !(c.mask & 0xF)) return;  // no channel enabled
+    if (c.mask & kClearOnce) {  // a clear-on-bind: the first of this image (and aspect) in the frame only
+        static std::unordered_map<const GpuImage*, uint64_t> cleared[2];  // image -> 1 + the present count then
+        static uint64_t kept = 0, skipped = 0;
+        uint64_t& at = cleared[color][img];
+        bool repeat = at == g_replay_presents + 1;
+        if ((repeat ? ++skipped : ++kept) % 20000 == 0)
+            log("nvn: clear-on-bind: %llu replayed, %llu repeats in a frame skipped", (unsigned long long)kept,
+                (unsigned long long)skipped);
+        if (repeat) return;
+        at = g_replay_presents + 1;
+    }
     VkClearAttachment a{};
     if (color) {
         a.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, a.colorAttachment = c.n;
@@ -225,17 +237,17 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     // The part of the target the clear covers: the scissor (pass coordinates, as the draws') within the target.
     VkRect2D rect{{0, 0}, full};
     if (!no_scissor && replay::g_state.has_scissor) {
-        const int32_t* s = replay::g_state.scissor;
+        int32_t s[4] = {replay::g_state.scissor[0], replay::g_state.scissor[1], replay::g_state.scissor[2],
+                        replay::g_state.scissor[3]};
+        if (img->uw) {  // a resized screen target (nvn_ultrawide.cpp): the guest's span, scaled
+            uw_span(s[0], s[2], full.width, img->sx);
+            uw_span(s[1], s[3], full.height, img->sy);
+        }
         int64_t x0 = std::max(0, s[0]), y0 = std::max(0, s[1]);
         int64_t x1 = std::min<int64_t>(int64_t(s[0]) + std::max(0, s[2]), full.width);
         int64_t y1 = std::min<int64_t>(int64_t(s[1]) + std::max(0, s[3]), full.height);
         if (x1 <= x0 || y1 <= y0) return;  // nothing of the target inside the scissor
         rect = {{int32_t(x0), int32_t(y0)}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
-        if (img->uw) {  // NX_ULTRAWIDE
-            int32_t rx = rect.offset.x, rw = int32_t(rect.extent.width);
-            uw_span(rx, rw, full.width);
-            rect.offset.x = rx, rect.extent.width = uint32_t(rw);
-        }
     }
     bool scissored =
         rect.offset.x || rect.offset.y || rect.extent.width < full.width || rect.extent.height < full.height;
