@@ -10,6 +10,8 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <cstdlib>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <mach/thread_switch.h>
 #include <pthread/qos.h>
 #include <sched.h>
@@ -96,11 +98,25 @@ PadState g_pad;
 // ---- memory ---------------------------------------------------------------------------------------------------
 
 // No MAP_FIXED_NOREPLACE on Darwin: ask for the address as a hint and give it back if the kernel chose another.
+// macOS 27 ignores mmap's address hint below 0x70_0000_0000 (the mapping lands up there), and MAP_FIXED would
+// silently replace whatever is already mapped. mach_vm_allocate with VM_FLAGS_FIXED takes the exact range or fails
+// when any of it is in use.
 bool reserve(uint64_t addr, uint64_t size) {
-    void* p = mmap(reinterpret_cast<void*>(addr), size, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) return false;
-    if (uint64_t(p) != addr) {
-        munmap(p, size);
+    mach_vm_address_t a = addr;
+    if (mach_vm_allocate(mach_task_self(), &a, size, VM_FLAGS_FIXED) != KERN_SUCCESS) {
+        mach_vm_address_t r = addr;  // name what is in the way (svcs and the guest layout are in runtime.h)
+        mach_vm_size_t rs = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t n = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj;
+        if (mach_vm_region(mach_task_self(), &r, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &n, &obj) ==
+            KERN_SUCCESS)
+            nx::log("memory: %llx (+%llx) overlaps a mapping at %llx (+%llx)", (unsigned long long)addr,
+                    (unsigned long long)size, (unsigned long long)r, (unsigned long long)rs);
+        return false;
+    }
+    if (mprotect(reinterpret_cast<void*>(addr), size, PROT_NONE) != 0) {
+        mach_vm_deallocate(mach_task_self(), addr, size);
         return false;
     }
     return true;

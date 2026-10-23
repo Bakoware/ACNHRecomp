@@ -18,13 +18,13 @@
 #include <intrin.h>
 #endif
 
-// Where the modules are mapped. macOS on Apple silicon keeps 0x10_0000_0000..0x6F_FFFF_FFFF for itself (fixed
-// mappings there fail) and puts the dyld shared cache at 0x1_8000_0000..0x3_0000_0000, so the guest address space
-// moves to 0x3_0000_0000..0xF_FFFF_FFFF there, still inside Horizon's 39 bits. Generated code adds each module's
-// offset to this.
+// Where the modules are mapped. macOS on Apple silicon reserves 0x2_DC00_0000..0x6F_FFFF_FFFF for the dyld shared
+// region and a guard (macOS 27; fixed mappings there fail) and puts malloc's zones at random addresses in
+// 0x70_0000_0000..0x80_0000_0000, so the whole guest layout moves up by 0xC0_0000_0000 there: modules at
+// 0x100_0000_0000, nothing else above 2^39. Generated code adds each module's offset to this.
 #ifndef NX_BASE
 #if defined(__APPLE__)
-#define NX_BASE 0x0000000300000000ull
+#define NX_BASE 0x0000010000000000ull
 #else
 #define NX_BASE 0x0000004000000000ull
 #endif

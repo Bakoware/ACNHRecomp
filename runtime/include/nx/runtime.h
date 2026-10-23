@@ -19,23 +19,21 @@ extern bool g_trace;  // verbose tracing (NX_TRACE=1)
 // ---- address space --------------------------------------------------------------------------------------------
 // Guest pointers are host pointers. Everything the guest can see lives in these reserved ranges.
 
-constexpr uint64_t kAddressSpaceBase = 0x0008000000ull;
+// macOS: the same layout as Linux, moved up by kGuestShift (see NX_BASE in nx/cpu.h): the guest's 39-bit address
+// space is 0xC0_0800_0000..0x140_0000_0000 there. svcGetInfo hands every region to the guest, nothing assumes 0.
+#if defined(__APPLE__)
+constexpr uint64_t kGuestShift = 0xC000000000ull;
+#else
+constexpr uint64_t kGuestShift = 0;
+#endif
+constexpr uint64_t kAddressSpaceBase = kGuestShift + 0x0008000000ull;
 constexpr uint64_t kAddressSpaceSize = 0x7FF8000000ull;  // 39-bit, like an application on Horizon
 constexpr uint64_t kModuleBase = NX_BASE;  // main; sdk at +0x10000000 (NX_BASE, nx/cpu.h)
 constexpr uint64_t kHeapMax = 0x180000000ull;  // 6 GiB
 constexpr uint64_t kStackSize = 0x100000000ull;
 constexpr uint64_t kKernelSize = 0x100000000ull;
 constexpr uint64_t kThunkSize = 0x100000ull;
-#if defined(__APPLE__)
-// macOS: only 0x3_0000_0000..0xF_FFFF_FFFF is free below 0x70_0000_0000 (see NX_BASE).
-constexpr uint64_t kHeapBase = 0x400000000ull;
-constexpr uint64_t kAliasBase = 0x600000000ull;
-constexpr uint64_t kAliasSize = 0x400000000ull;
-constexpr uint64_t kStackBase = 0xA00000000ull;
-constexpr uint64_t kKernelBase = 0xB00000000ull;
-constexpr uint64_t kThunkBase = 0xE00000000ull;
-#else
-constexpr uint64_t kHeapBase = 0x5000000000ull;
+constexpr uint64_t kHeapBase = kGuestShift + 0x5000000000ull;
 #if defined(__ANDROID__)
 // Android maps the zygote's executable (app_process64, position independent) at a random address from about
 // 0x55_5555_0000 to 0x65_5555_0000 at every boot, inside 0x58..0x68: a Galaxy S23 refused the alias reservation
@@ -43,14 +41,13 @@ constexpr uint64_t kHeapBase = 0x5000000000ull;
 // low 4 GiB), so the alias region goes there. The guest learns it from svcGetInfo, like every region but the modules.
 constexpr uint64_t kAliasBase = 0x2000000000ull;
 #else
-constexpr uint64_t kAliasBase = 0x5800000000ull;
+constexpr uint64_t kAliasBase = kGuestShift + 0x5800000000ull;
 #endif
 constexpr uint64_t kAliasSize = 0x1000000000ull;
-constexpr uint64_t kStackBase = 0x6800000000ull;
+constexpr uint64_t kStackBase = kGuestShift + 0x6800000000ull;
 // Kept below 0x70_0000_0000: Android (39-bit address space) maps the process's own libraries and heap up there.
-constexpr uint64_t kKernelBase = 0x6A00000000ull;
-constexpr uint64_t kThunkBase = 0x6F00000000ull;
-#endif
+constexpr uint64_t kKernelBase = kGuestShift + 0x6A00000000ull;
+constexpr uint64_t kThunkBase = kGuestShift + 0x6F00000000ull;
 // kKernelBase: TLS pages, main thread stack (memory we hand out). kThunkBase: HLE function addresses (never mapped).
 
 void memory_init();

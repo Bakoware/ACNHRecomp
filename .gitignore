@@ -31,3 +31,4 @@ refs/
 *.sarc
 /gen/
 /build/
+.DS_Store
