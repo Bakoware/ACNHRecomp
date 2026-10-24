@@ -190,7 +190,9 @@ def analyze(m, log=print):
     log(f"  seeds: {len(fdes)} FDE, {len(an.plt)} PLT stubs, {len(entries)} entries")
 
     # Fixpoint: build ranges, resolve jump tables, promote out-of-range branch targets to entries.
-    for it in range(20):
+    # The passes add the targets of the functions found in the one before: chains of out-of-line routines (a patch's
+    # routines in unused space, branching on to the next and back into a function) take one pass per link.
+    for it in range(400):
         an.functions = _ranges(an, sorted(entries), fdes, fde_bounds)
         an.jump_tables = {}
         new = set()
@@ -224,6 +226,8 @@ def analyze(m, log=print):
         if not new:
             break
         entries |= new
+    else:
+        raise SystemExit("analysis: branch targets still growing after 400 passes")
 
     an.unresolved_br = [a for a, (mn, _) in insns.items()
                         if mn == "br" and a not in an.jump_tables and not _in_plt(an, a)]

@@ -160,6 +160,8 @@ say "recompile (main, sdk, subsdk0)"
 recomp() {  # module base
   local m=$1 b=$2 H=()
   [ "$m" = main ] && H=(--hooks games/acnh/hooks.txt)  # instructions that call the runtime first (games/acnh/game.cpp)
+  # The native 60 FPS variant, kept once tools/setup_60fps.sh installed it.
+  [ "$m" = main ] && [ -f "$G/speedfix_main.pchtxt" ] && H+=(--variant "$G/speedfix_main.pchtxt")
   if [ ! -f "$G/gen/$m/table.cpp" ] || [ "recomp/emit.py" -nt "$G/gen/$m/table.cpp" ] || force recomp ||
      { [ "$m" = main ] && [ games/acnh/hooks.txt -nt "$G/gen/$m/table.cpp" ]; }; then
     "$PY" -m recomp "$G/exefs/$m" "$G/gen/$m" --name "$m" --base "$b" --jobs "$JOBS" ${H[@]+"${H[@]}"} > "$G/logs/recomp_$m.log" 2>&1

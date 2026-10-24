@@ -371,7 +371,37 @@ FastModule fast_module(const ModuleInfo* mi) {
     return {mi->base, mi->text_size, funcs, block};
 }
 
+// ---- variants (VariantRegistrar, runtime.h) ---------------------------------------------------------------------
+
+struct Variant {
+    const uint32_t* words;
+    size_t count;
+};
+std::unordered_map<std::string, Variant>& variants() {
+    static std::unordered_map<std::string, Variant> v;
+    return v;
+}
+
+}  // namespace nx
+
+// Read by the dispatchers of the --variant functions; set by load_modules (after config.ini), before any guest code.
+extern "C" bool nx_variant_on = false;
+// NX_VARIANT_RANGE=<lo>-<hi> (hex module offsets): only the functions starting there take their patched bodies.
+extern "C" uint64_t nx_variant_lo = 0, nx_variant_hi = ~0ull;
+
+namespace nx {
+
+VariantRegistrar::VariantRegistrar(const char* module, const uint32_t* words, size_t count) {
+    variants()[module] = {words, count};
+}
+
 void load_modules(const ModuleInfo* const* mods, size_t count, const std::string& data_dir) {
+    nx_variant_on = std::getenv("NX_SPEEDFIX") && std::getenv("NX_SPEEDFIX")[0] == '1';
+    if (const char* r = std::getenv("NX_VARIANT_RANGE")) {
+        unsigned long long lo = 0, hi = 0;
+        if (std::sscanf(r, "%llx-%llx", &lo, &hi) == 2) nx_variant_lo = lo, nx_variant_hi = hi;
+    }
+    const bool variant_code = !(std::getenv("NX_VARIANT_CODE") && std::getenv("NX_VARIANT_CODE")[0] == '0');
     // Map every module first so symbols of all of them are known before relocating.
     for (size_t i = 0; i < count; i++) {
         const ModuleInfo* mi = mods[i];
@@ -383,6 +413,15 @@ void load_modules(const ModuleInfo* const* mods, size_t count, const std::string
         if (!f) fatal("missing %s (run tools/nso2bin.py)", path.c_str());
         f.read(reinterpret_cast<char*>(mi->base), std::streamsize(image));
         if (uint64_t(f.gcount()) != image) fatal("%s: expected %llx bytes", path.c_str(), (unsigned long long)image);
+        if (auto it = variants().find(mi->name); it != variants().end()) {
+            // NX_VARIANT_WORDS=0 / NX_VARIANT_CODE=0: one half only (bisecting).
+            static const bool words = !(std::getenv("NX_VARIANT_WORDS") && std::getenv("NX_VARIANT_WORDS")[0] == '0');
+            if (nx_variant_on && words)
+                for (size_t k = 0; k + 1 < 2 * it->second.count; k += 2)
+                    std::memcpy(reinterpret_cast<void*>(mi->base + it->second.words[k]), &it->second.words[k + 1], 4);
+            log("loader: %s: variant %s (%zu words)", mi->name, nx_variant_on ? "on" : "off", it->second.count);
+        }
+        if (!variant_code) nx_variant_on = false;  // the words are in; the functions keep their own bodies
         vm_set(mi->base + mi->text, mi->text_size, kMemCode, 5);
         vm_set(mi->base + mi->ro, mi->ro_size, kMemCode, 1);
         vm_set(mi->base + mi->data, size - mi->data, kMemCodeData, 3);

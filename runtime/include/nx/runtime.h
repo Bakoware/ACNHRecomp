@@ -89,6 +89,13 @@ std::string describe(uint64_t addr);  // "sdk+0x1234 (symbol+0x10)"
 // ---- HLE ------------------------------------------------------------------------------------------------------
 
 using HleFn = void (*)(CPU&);
+// A module recompiled with --variant (recomp/__main__.py): the words its patch changes, (offset, word) pairs. When
+// nx_variant_on (NX_SPEEDFIX) the loader writes them into the module's image and the changed functions run their
+// patched bodies.
+struct VariantRegistrar {
+    VariantRegistrar(const char* module, const uint32_t* words, size_t count);
+};
+
 struct HleRegistrar {
     HleRegistrar(const char* name, HleFn fn);
 };

@@ -1,5 +1,26 @@
 # 60 Hz nativo (lógica do jogo a 60 por segundo)
 
+## Caminho atual: SpeedFix (24/10/2026)
+
+`tools/setup_60fps.sh` instala o **ACNH 60 FPS + SpeedFix** de tmouh (https://github.com/tmouh/acnh-60fps,
+CC BY-NC 4.0, baixado para `private/`, nunca incluído no repositório): 6.417 palavras de código e dados para o `main`
+3.0.2, 1.437 valores do `romfs/Pack/StaticParam.pack` e três tabelas dos moradores, cada um medido contra o jogo a
+30 fps. O recompilador aplica o patch como segunda versão de cada função que ele muda (`recomp --variant`): 974
+funções ganham dois corpos e um despachante (`nx_variant_on`, ligado por `NX_SPEEDFIX`), e 866 rotinas que o patch
+põe em espaço livre viram funções próprias; o carregador escreve as palavras na imagem do módulo quando ligado. Um
+só binário roda a 30 ou a 60 (`video.frame_rate = 60`; sem o SpeedFix instalado, "60" fica em 30). Os ganchos de
+`NX_NATIVE60` (abaixo) não são usados nesse modo.
+
+Medido no M1 a partir de um save do dia 2: andar 3 s para a esquerda (90 quadros a 30, 180 a 60) leva o personagem
+ao mesmo ponto nos dois modos. Velocidade do jogo = taxa de quadros: perto da barraca 60 fps; na beira do rio
+~44 fps (o replay do NVN leva 14 ms por quadro ali, com ou sem o SpeedFix), e o jogo fica mais lento junto. Próximo
+passo: baratear o replay.
+
+Notas da integração: no `.pchtxt` os deslocamentos já são do módulo (`offset_shift` é o que se soma para o IPS); e
+as rotinas do patch se encadeiam (uma passada da análise por elo: 51 passadas), daí o limite de 400.
+
+## Caminho anterior: ganchos (NX_NATIVE60)
+
 Objetivo: apresentar a 60 fps com o jogo andando na velocidade certa, fazendo a lógica rodar 60 vezes por segundo com
 metade do passo por quadro (e não inventando quadros intermediários, como o `video.frame_gen`). **Experimental e
 incompleto**: `video.frame_rate = 60native` no `config.ini` (liga `NX_NATIVE60=1` e o intervalo de apresentação 1;

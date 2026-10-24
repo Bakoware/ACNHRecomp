@@ -68,7 +68,14 @@ std::string handheld(const std::string& v) { return v == "handheld" ? "1" : "0";
 std::string fsr(const std::string& v) { return v == "fsr" ? "1" : "0"; }
 std::string fps_cap(const std::string& v) { return v == "30" ? "30" : ""; }
 // "60native": the game's logic steps at 60 Hz too (games/acnh/native60.cpp, docs/NATIVE60.md).
-std::string interval(const std::string& v) { return v == "60" || v == "60native" ? "1" : ""; }
+// "60": tmouh's SpeedFix (tools/setup_60fps.sh) rescales the game for 60 updates a second; without it, 60 presents a
+// second would run the game twice as fast, so "60" stays at 30 until it is installed.
+bool speedfix_installed() {
+    std::error_code ec;
+    return std::filesystem::is_directory(std::filesystem::u8path(plat::data_root() + "/mods/speedfix60/romfs"), ec);
+}
+std::string speedfix(const std::string& v) { return v == "60" && speedfix_installed() ? "1" : ""; }
+std::string interval(const std::string& v) { return (v == "60" && speedfix_installed()) || v == "60native" ? "1" : ""; }
 std::string native60(const std::string& v) { return v == "60native" ? "1" : ""; }
 std::string framegen(const std::string& v) { return v == "builtin" ? "1" : ""; }  // lsfg-vk is a Vulkan layer of its own
 // The screen's 0..100% sharpness -> FSR's RCAS attenuation in stops (0 sharpest, 2 softest).
@@ -91,6 +98,7 @@ const Mapping kMappings[] = {
     {"video.gpu", "NX_GPU", auto_empty, true},
     {"video.frame_rate", "NX_PRESENT_INTERVAL", interval, true},
     {"video.frame_rate", "NX_NATIVE60", native60, true},
+    {"video.frame_rate", "NX_SPEEDFIX", speedfix, true},
     {"video.frame_cap", "NX_FPS_CAP", fps_cap, true},
     {"video.frame_gen", "NX_FRAMEGEN", framegen, true},
     {"video.async_shaders", "NX_ASYNC_PIPELINES", on_off, true},
@@ -234,6 +242,8 @@ void config_apply() {
     if (ConfigEntry* e = find("game.mods")) mods = e->value;
     if (game_lang == "pt-BR")
         mods = mods.empty() ? "ptbr" : (mods.find("ptbr") == std::string::npos ? mods + ",ptbr" : mods);
+    if (const char* sf = std::getenv("NX_SPEEDFIX"); sf && sf[0] == '1')  // its parameter files go with its code
+        mods = mods.empty() ? "speedfix60" : mods + ",speedfix60";
     if (!mods.empty()) set_env_default("NX_MODS", mods);
     log("config: %zu settings from %s", g_entries.size(), path().c_str());
 }

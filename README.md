@@ -512,6 +512,12 @@ opens, run `NX_REPORT=1 private/acnh/build/acnh` once after the crash.
 
 **The picture tears in full screen.** Settings > Video > VSync (on by default).
 
+**Native 60 FPS at the normal game speed.** Run `tools/setup_60fps.sh` once: it downloads tmouh's
+[ACNH 60 FPS + SpeedFix](https://github.com/tmouh/acnh-60fps) (CC BY-NC 4.0; not part of this repository), builds
+its parameter file from your dump and recompiles `main` with it as a second version of every function it changes.
+Then Settings > Video > Frame rate > 60. The game's speed follows the frame rate, so it plays slower wherever the
+computer cannot hold 60.
+
 **The setup stops with "first run: pass --keys, --base and --update".**
 The import has not been done yet; pass all three on the first run.
 
@@ -617,6 +623,8 @@ More detail: [docs/ACNH.md](docs/ACNH.md) (the game's modules, RomFS and shader 
 - [Ryujinx / Ryubing](https://codeberg.org/Software_arch/Ryubing) (MIT): the Maxwell shader translator, used
   offline.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT): the settings screen.
+- [ACNH 60 FPS + SpeedFix](https://github.com/tmouh/acnh-60fps) by tmouh (CC BY-NC 4.0): the 60 FPS game-speed
+  rescaling, downloaded by `tools/setup_60fps.sh` and applied on your machine (not redistributed here).
 - [SDL3](https://github.com/libsdl-org/SDL), [Capstone](https://www.capstone-engine.org/),
   [Unicorn](https://www.unicorn-engine.org/), libvpx, libvorbis, AMD FidelityFX FSR 1.
 - Projects studied before starting (summary in [docs/REFERENCES.md](docs/REFERENCES.md)):
