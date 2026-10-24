@@ -1,0 +1,51 @@
+# A new game from the first frame to free control on the island's pier (3.0.2, English). Recorded live on the Mac
+# (live.py's sent.txt) and replayed with `live.py <root> play tools/play/scenarios/intro_to_island.live`, starting
+# right after run.sh (frame 0-ish). Blocks are sent when the game reaches that frame; the island and the residents
+# are rolled anew on every new game, so the plaza and the tent spot are played live after this.
+# Character: "ana", birthday 1/1, default look, default answers (hemisphere, island map: the first one).
+# frame 1260
+press A 6 25
+# frame 1710
+press A 10 30
+# frame 2415
+# (A also types on the name keyboard when it comes up: "11111", deleted next)
+press A 15 40
+# frame 3390
+# name: delete, then a-n-a on the keyboard with the d-pad
+press B 5 12
+press Down 2 12
+press A 1 15
+press Down 1 12
+press Right 5 12
+press A 1 15
+press Up 1 12
+press Left 5 12
+press A 1 15
+# frame 3900
+# Plus confirms the name, then the birthday screen
+press Plus 1 60
+press A 4 40
+# frame 4380
+press Plus 1 60
+press A 8 40
+# frame 5025
+press A 10 40
+# frame 5640
+# Plus confirms the character creator
+press Plus 1 60
+press A 8 40
+# frame 6300
+press A 15 40
+# frame 7125
+press A 15 40
+# frame 7995
+press A 25 30
+# frame 9000
+# the last questions, then the opening movie (65 s) and the flight
+press A 40 30
+# frame 13200
+# arrival: Timmy on the pier
+press A 30 30
+# frame 14385
+walk up 60
+press A 10 30

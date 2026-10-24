@@ -1,5 +1,6 @@
 // Small services that only need to answer "yes, fine": parental controls, add-on content, logging, power.
 #include <cstdlib>
+#include "config.h"
 #include "ipc.h"
 
 namespace nx {
@@ -38,8 +39,8 @@ ServiceRegistrar r_lm("lm", [] {
 ServiceRegistrar r_apm("apm", [] {
     return make("apm", [](Service& s) {
         s.cmds[0] = [](IpcCtx& c) { c.push_object(make("ISession")); return 0u; };  // OpenSession
-        s.cmds[1] = [](IpcCtx& c) {  // GetPerformanceMode: boost (docked), normal with NX_HANDHELD (svc_am.cpp)
-            c.push<uint32_t>(std::getenv("NX_HANDHELD") ? 0 : 1);
+        s.cmds[1] = [](IpcCtx& c) {  // GetPerformanceMode: boost (docked), normal with handheld
+            c.push<uint32_t>(config_is_handheld() ? 0 : 1);
             return 0u;
         };
     });

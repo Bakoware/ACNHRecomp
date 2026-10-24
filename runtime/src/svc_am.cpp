@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <deque>
 
+#include "config.h"
 #include "ipc.h"
 #include "language.h"
 #include "users.h"
@@ -56,10 +57,9 @@ std::shared_ptr<Service> common_state_getter() {
             if (a.messages.empty()) a.message_event->signaled = false;
             return 0u;
         };
-        // NX_HANDHELD=1: handheld mode, so the game renders for 1280x720 (a lighter GPU load) instead of docked 1080p.
-        static const bool handheld = std::getenv("NX_HANDHELD") != nullptr;
-        s.cmds[5] = [](IpcCtx& c) { c.push<uint8_t>(handheld ? 0 : 1); return 0u; };   // GetOperationMode
-        s.cmds[6] = [](IpcCtx& c) { c.push<uint32_t>(handheld ? 0 : 1); return 0u; };  // GetPerformanceMode
+        // Handheld mode: 1280x720 (a lighter GPU load) instead of docked 1080p.
+        s.cmds[5] = [](IpcCtx& c) { c.push<uint8_t>(config_is_handheld() ? 0 : 1); return 0u; };   // GetOperationMode
+        s.cmds[6] = [](IpcCtx& c) { c.push<uint32_t>(config_is_handheld() ? 0 : 1); return 0u; };  // GetPerformanceMode
         s.cmds[9] = [](IpcCtx& c) { c.push<uint8_t>(1); return 0u; };   // GetCurrentFocusState: in focus
         // SetCpuBoostMode(CpuBoostMode): Wonder asks for the boost around every load. A PC has no clock to raise, so
         // the request is taken and dropped (no output). Same answer as the generic stub, without its log line.
@@ -67,7 +67,8 @@ std::shared_ptr<Service> common_state_getter() {
         // NX_RENDER_RES=<w>x<h>: the size the game renders at, while it stays docked (a resolution scale: the game sizes
         // its window textures and targets from this answer; the present step stretches the picture to the window).
         static const std::pair<uint32_t, uint32_t> res = [] {
-            uint32_t w = handheld ? 1280 : 1920, h = handheld ? 720 : 1080, rw = 0, rh = 0;
+            bool hh = config_is_handheld();
+            uint32_t w = hh ? 1280 : 1920, h = hh ? 720 : 1080, rw = 0, rh = 0;
             if (const char* e = std::getenv("NX_RENDER_RES"); e && std::sscanf(e, "%ux%u", &rw, &rh) == 2 && rw >= 320 && rh >= 180)
                 w = rw, h = rh;
             return std::pair<uint32_t, uint32_t>{w, h};

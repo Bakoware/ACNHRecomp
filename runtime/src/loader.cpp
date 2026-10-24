@@ -1,7 +1,11 @@
 // Module loader and dynamic linker (what rtld does on Horizon), indirect-call dispatch and HLE thunks.
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
+#include <cstdint>
+#include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -28,6 +32,7 @@ std::unordered_map<std::string, uint64_t> g_exports;
 struct Thunk {
     std::string name;
     HleFn fn;
+    bool leaf = false;  // a host libc routine (below): called straight, without the name bookkeeping
 };
 std::vector<Thunk> g_thunks;
 std::unordered_map<std::string, uint64_t> g_thunk_by_name;
@@ -84,7 +89,64 @@ void fatal(const char* fmt, ...) {
 
 HleRegistrar::HleRegistrar(const char* name, HleFn fn) { registry()[name] = fn; }
 
+// ---- libc string routines --------------------------------------------------------------------------------------
+// The SDK's memcpy/memmove/memset/memcmp/strlen (ARM's optimized routines) recompiled are many times slower than the
+// host's: memcpy (sdk __memcpy_aarch64) was the busiest recompiled function of the process. Every call to them goes
+// through a PLT slot, so the host versions take their place by name. Same results: memcpy is memmove-safe in ARM's
+// routines (and here), memcmp returns the difference of the first differing bytes as the guest's does. The game's
+// main and the SDK reach them through nx::call's thunk path (leaf: no hle_current_name bookkeeping).
+// NX_HLE_LIBC=0: the recompiled routines (bisecting).
+namespace {
+void hle_memmove(CPU& c) {
+    if (c.x[2]) std::memmove(reinterpret_cast<void*>(c.x[0]), reinterpret_cast<const void*>(c.x[1]), c.x[2]);
+}
+void hle_memset(CPU& c) {
+    if (c.x[2]) std::memset(reinterpret_cast<void*>(c.x[0]), int(c.x[1] & 0xFF), c.x[2]);
+}
+void hle_memcmp(CPU& c) {
+    const uint8_t* a = reinterpret_cast<const uint8_t*>(c.x[0]);
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(c.x[1]);
+    uint64_t n = c.x[2], k = 0;
+    for (; k + 8 <= n; k += 8) {
+        uint64_t x, y;
+        std::memcpy(&x, a + k, 8), std::memcpy(&y, b + k, 8);
+        if (x != y) break;
+    }
+    for (; k < n; k++)
+        if (a[k] != b[k]) {
+            c.x[0] = uint32_t(int32_t(a[k]) - int32_t(b[k]));
+            return;
+        }
+    c.x[0] = 0;
+}
+void hle_strlen(CPU& c) { c.x[0] = std::strlen(reinterpret_cast<const char*>(c.x[0])); }
+
+struct LibcFn {
+    const char* name;
+    HleFn fn;
+};
+constexpr LibcFn kLibc[] = {{"memcpy", hle_memmove}, {"memmove", hle_memmove}, {"memset", hle_memset},
+                            {"memcmp", hle_memcmp},  {"strlen", hle_strlen}};
+
+bool libc_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_HLE_LIBC");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+
+bool is_leaf(HleFn fn) {
+    for (const LibcFn& l : kLibc)
+        if (l.fn == fn) return true;
+    return false;
+}
+}  // namespace
+
 HleFn hle_lookup(const char* name) {
+    if (libc_on())
+        for (const LibcFn& l : kLibc)
+            if (std::strcmp(l.name, name) == 0) return l.fn;
     auto it = registry().find(name);
     return it == registry().end() ? nullptr : it->second;
 }
@@ -132,7 +194,7 @@ uint64_t hle_address_or(const char* name, HleFn fallback) {
     if (g_thunks.size() == kThunkSize / 16) fatal("out of HLE thunks");
     HleFn fn = hle_lookup(name);
     uint64_t addr = kThunkBase + g_thunks.size() * 16;
-    g_thunks.push_back({name, fn ? fn : fallback});
+    g_thunks.push_back({name, fn ? fn : fallback, fn && is_leaf(fn)});
     g_thunk_by_name[name] = addr;
     return addr;
 }
@@ -197,7 +259,23 @@ Fn fast_lookup(const FastModule& m, uint64_t off) {
     return f->offset == off ? f->fn : nullptr;
 }
 
-void call(CPU& c, uint64_t t) {
+// In front of fast_lookup: a direct-mapped cache of recent targets (virtual calls in the game's loops hit the same
+// few hundred functions; the index and entry arrays above are megabytes, two dependent cache misses per call).
+// An entry is one 64-bit word, so threads read and write it without a lock and never see half of one: the high half
+// is the target's key ((target - g_cache_base) / 4 + 1, 0 = empty), the low half the host function's offset from
+// kCallAnchor (all generated code is in one binary). NX_CALL_CACHE=0: off.
+constexpr unsigned kCallCacheBits = 13;  // 8192 entries, 64 KB
+std::atomic<uint64_t> g_call_cache[1u << kCallCacheBits];
+uint64_t g_cache_base = 0, g_cache_span = 0;  // modules within [base, base + span); span 0: the cache is off
+
+void call_anchor(CPU&) {}
+inline uintptr_t anchor() { return reinterpret_cast<uintptr_t>(&call_anchor); }
+
+inline uint32_t cache_slot(uint64_t rel) {
+    return uint32_t((uint32_t(rel >> 2) * 0x9E3779B1u) >> (32 - kCallCacheBits));
+}
+
+[[gnu::noinline]] void call_slow(CPU& c, uint64_t t) {
     for (size_t k = 0; k < g_fast_count; k++) {
         const FastModule& m = g_fast[k];
         uint64_t off = t - m.base;
@@ -211,6 +289,11 @@ void call(CPU& c, uint64_t t) {
                 backtrace(c);
                 fatal("call into the middle of a function: %s (lr %s)", describe(t).c_str(), describe(c.x[30]).c_str());
             }
+            uint64_t rel = t - g_cache_base;
+            int64_t delta = int64_t(reinterpret_cast<uintptr_t>(fn) - anchor());
+            if (rel < g_cache_span && !(rel & 3) && delta >= INT32_MIN && delta <= INT32_MAX)
+                g_call_cache[cache_slot(rel)].store((uint64_t((rel >> 2) + 1) << 32) | uint32_t(int32_t(delta)),
+                                                    std::memory_order_relaxed);
             fn(c);
             return;
         }
@@ -218,6 +301,10 @@ void call(CPU& c, uint64_t t) {
     uint64_t off = t - kThunkBase;
     if (off < kThunkSize && off / 16 < g_thunks.size()) {
         const Thunk& th = g_thunks[off / 16];
+        if (th.leaf && !g_trace) {
+            th.fn(c);
+            return;
+        }
         if (g_trace) log("hle %s", th.name.c_str());
         const char* prev = t_missing_name;
         t_missing_name = th.name.c_str();
@@ -226,6 +313,18 @@ void call(CPU& c, uint64_t t) {
         return;
     }
     fatal("call to %llx (%s), lr %s", (unsigned long long)t, describe(t).c_str(), describe(c.x[30]).c_str());
+}
+
+void call(CPU& c, uint64_t t) {
+    uint64_t rel = t - g_cache_base;
+    if (rel < g_cache_span) [[likely]] {
+        uint64_t e = g_call_cache[cache_slot(rel)].load(std::memory_order_relaxed);
+        if (uint32_t(e >> 32) == uint32_t((rel >> 2) + 1) && !(rel & 3)) [[likely]] {
+            reinterpret_cast<Fn>(anchor() + intptr_t(int32_t(uint32_t(e))))(c);
+            return;
+        }
+    }
+    call_slow(c, t);
 }
 
 void trace_sp(CPU& c, uint64_t pc) {
@@ -282,6 +381,18 @@ void load_modules(const ModuleInfo* const* mods, size_t count, const std::string
 
         g_modules.push_back(LoadedModule{mi, mi->base, size});
         if (g_fast_count < 4) g_fast[g_fast_count++] = fast_module(mi);
+        {  // the call cache covers every module while they all fit 2^34 bytes (keys are 32-bit words)
+            static const bool cache = [] {
+                const char* e = std::getenv("NX_CALL_CACHE");
+                return !(e && e[0] == '0');
+            }();
+            uint64_t lo = ~0ull, hi = 0;
+            for (size_t k = 0; k < g_fast_count; k++)
+                lo = std::min(lo, g_fast[k].base), hi = std::max(hi, g_fast[k].base + g_fast[k].text_size);
+            g_cache_span = 0;  // set again below, with the base, before any call (load_modules runs first)
+            if (cache && hi - lo < (1ull << 34)) g_cache_base = lo, g_cache_span = hi - lo;
+            for (auto& e : g_call_cache) e.store(0, std::memory_order_relaxed);
+        }
 
         for (size_t k = 0; k < mi->symbol_count; k++) {
             const Symbol& s = mi->symbols[k];

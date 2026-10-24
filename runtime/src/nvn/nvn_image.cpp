@@ -101,6 +101,10 @@ GpuImage* image_of(uint64_t guest) {
             for (auto it = g_kept_targets.begin(); it != g_kept_targets.end();)
                 if (it->second && it->second->uw) retire_image(std::move(it->second)), it = g_kept_targets.erase(it);
                 else ++it;
+            for (auto it = g_live_images.begin(); it != g_live_images.end();) {
+                if (auto sp = it->second.lock(); sp && sp->uw) it = g_live_images.erase(it);
+                else ++it;
+            }
         }
         uw_resize(*t);
         retire_image(std::move(t->image));

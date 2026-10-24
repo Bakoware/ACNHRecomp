@@ -6,13 +6,30 @@
 #   performance  as balanced with softer FSR sharpening (NX_FSR_SHARP=1.0) and the audio reverb off
 # Extra environment still applies (NX_FSR_SHARP, NX_MEM_LIMIT_GB, NX_LOG, NX_MUTE, NX_HEADLESS).
 cd "$(dirname "$0")/.." || exit 1
-MODE=${1:-balanced}
-BUILD=${2:-private/acnh/build}
-case "$MODE" in
-  quality) ;;
-  balanced) export NX_HANDHELD=1 NX_FSR=1 ;;
-  performance) export NX_HANDHELD=1 NX_FSR=1 NX_FSR_SHARP=${NX_FSR_SHARP:-1.0} NX_AUDIO_REVERB=${NX_AUDIO_REVERB:-0} ;;
-  *) echo "unknown preset: $MODE"; exit 1 ;;
-esac
+BUILD="private/acnh/build"
+if [ -n "$1" ]; then
+  case "$1" in
+    quality)
+      export NX_HANDHELD=0 NX_FSR=0
+      BUILD=${2:-$BUILD}
+      ;;
+    balanced)
+      export NX_HANDHELD=1 NX_FSR=1
+      BUILD=${2:-$BUILD}
+      ;;
+    performance)
+      export NX_HANDHELD=1 NX_FSR=1 NX_FSR_SHARP=${NX_FSR_SHARP:-1.0} NX_AUDIO_REVERB=${NX_AUDIO_REVERB:-0}
+      BUILD=${2:-$BUILD}
+      ;;
+    *)
+      if [ -d "$1" ]; then
+        BUILD="$1"
+      else
+        echo "unknown preset: $1"
+        exit 1
+      fi
+      ;;
+  esac
+fi
 export NX_LOG=${NX_LOG:-private/acnh/nx_play.log}
 exec "$BUILD/acnh"

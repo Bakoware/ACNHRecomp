@@ -327,7 +327,7 @@ Japanese, Korean, Simplified Chinese and Traditional Chinese.
 | Page | Options |
 |---|---|
 | Game | Game language (automatic from the system, the game's 14 languages, Brazilian Portuguese fan translation); menu language |
-| Video | Windowed / fullscreen, window size, game mode (1080p TV mode or 720p handheld mode), internal resolution (540p to 2160p/4K, or the window's), upscaling (bilinear or FSR 1, with sharpness), aspect ratio (16:9, automatic from the window, 16:10, 4:3, 21:9, 32:9, phone ratios; applied live), frame rate, frame generation (built-in, or lsfg-vk if installed), GPU (automatic, dedicated, integrated), prepare shaders at startup |
+| Video | Quality preset (quality, balanced, low), windowed / fullscreen, window size, game mode (1080p TV mode or 720p handheld mode), internal resolution (540p to 2160p/4K, or the window's), upscaling (bilinear or FSR 1, with sharpness), aspect ratio (16:9, automatic from the window, 16:10, 4:3, 21:9, 32:9, phone ratios; applied live), frame rate, frame generation (built-in, or lsfg-vk if installed), GPU (automatic, dedicated, integrated), prepare shaders at startup |
 | Audio | Master volume, environmental reverb, mute when the window is in the background |
 | Controls | Connected controller, confirm/cancel layout, button icons, vibration, stick dead zone, keyboard remapping |
 | Saves | Open the save folder, back up now, import, export, saves found on this computer, restore backups |
@@ -341,7 +341,9 @@ restart are marked on the screen. Environment variables set on the command line 
 | `game.language` | `auto`, `en-US`, `en-GB`, `es`, `es-419`, `fr`, `fr-CA`, `de`, `it`, `nl`, `ru`, `ja`, `ko`, `zh-CN`, `zh-TW`, `pt-BR` | `NX_LANGUAGE` |
 | `game.mods` | Comma-separated mod names | `NX_MODS` |
 | `ui.language` | `auto` or a menu language code | |
+| `video.preset` | `custom`, `quality`, `balanced`, `low` (see below) | |
 | `video.fullscreen` | `0`, `1` | `NX_FULLSCREEN` |
+| `video.show_fps` | `0`, `1` | `NX_SHOW_FPS` |
 | `video.window` | `auto` or `WxH` | `NX_RESOLUTION` |
 | `video.mode` | `docked`, `handheld` | `NX_HANDHELD` |
 | `video.upscaler` | `linear`, `fsr` | `NX_FSR` |
@@ -360,6 +362,22 @@ restart are marked on the screen. Environment variables set on the command line 
 | `input.rumble` | `0`, `1` | |
 | `input.deadzone` | `5`-`50` (percent) | |
 | `input.key.<action>` | An SDL key name | |
+
+`video.preset` sets the most expensive settings together. Chosen on the settings screen, it writes them (changing
+one of them afterwards turns the preset to `custom`); written by hand in `config.ini`, it fills in only the keys the
+file leaves out.
+
+| Preset | `video.mode` | `video.resolution` | `video.upscaler` | `audio.reverb` | Other |
+|---|---|---|---|---|---|
+| `quality` | `docked` | `native` (1080p) | `linear` | `1` | |
+| `balanced` | `handheld` | `native` (720p) | `fsr` | `1` | |
+| `low` | `docked` | `540` | `fsr` | `0` | `video.frame_gen = off` |
+
+`low` is meant for dual/quad-core CPUs, integrated GPUs (Intel UHD/Iris, older AMD APUs, Apple M1) and 4-6 GB of
+RAM. Measured on an M1 (MoltenVK) in the intro's 3D scenes, GPU time per frame (timestamps per render pass, same
+scripted input): TV mode at 1080p 14.9 ms, handheld mode (720p) 9.4 ms, handheld mode at 540p 8.2 ms, TV mode at
+540p 6.8 ms, which is why `low` keeps TV mode and lowers `video.resolution` instead. The game's CPU work per frame
+does not change with either (the draw replay takes 1.5-2.2 ms in all four); the reverb costs about one CPU core.
 
 The game's logic runs once per frame, so `video.frame_rate = 60` also makes it run twice as fast (see
 [Status](#status)). For 60 fps on screen at the normal speed, keep the frame rate at 30 and use frame generation:

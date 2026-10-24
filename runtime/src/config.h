@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace nx {
@@ -27,6 +28,10 @@ bool config_get_bool(const std::string& key, bool fallback);
 void config_set(const std::string& key, const std::string& value);
 std::vector<ConfigEntry> config_all();
 uint64_t config_generation();          // bumped by every config_set: readers cache by it
+bool config_show_fps();                 // whether the on-screen FPS counter is shown (video.show_fps / NX_SHOW_FPS)
+bool config_is_handheld();               // whether handheld mode (1280x720) is active (video.mode / NX_HANDHELD)
+// The keys and values of a video.preset ("quality", "balanced", "low"); empty for "custom" or an unknown name.
+std::vector<std::pair<std::string, std::string>> config_preset(const std::string& name);
 // Whether changing this key takes effect only after a restart (the screen says so).
 bool config_needs_restart(const std::string& key);
 

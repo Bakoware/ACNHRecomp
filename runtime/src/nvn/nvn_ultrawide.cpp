@@ -50,9 +50,24 @@ std::string setting(const char* env, const char* key, const char* fallback) {
 }
 
 // NX_WINDOW_SCRIPT=<present>:<w>x<h>,...: from that present on, the window is taken to be that size (headless runs,
-// where nothing resizes the hidden window: live resizing checked with dumped frames).
+// where nothing resizes the hidden window: live resizing checked with dumped frames). Or, while the game runs, a file
+// named window_size in the data folder holding "<w>x<h>" (checked once a second; kept, not deleted; an empty or
+// missing file: the real window).
 void window_px(uint64_t present, uint32_t& w, uint32_t& h) {
     plat::window_size(w, h);
+    static uint32_t live_w = 0, live_h = 0;
+    static uint64_t next_live = 0;
+    if (uint64_t now = plat::monotonic_ns(); now >= next_live) {
+        next_live = now + 1'000'000'000;
+        unsigned lw = 0, lh = 0;
+        if (FILE* f = plat::fopen_utf8(plat::data_root() + "/window_size", "rb")) {
+            if (std::fscanf(f, "%ux%u", &lw, &lh) != 2) lw = lh = 0;
+            std::fclose(f);
+        }
+        if (lw != live_w || lh != live_h) log("nvn: window size file: %ux%u", lw, lh);
+        live_w = lw, live_h = lh;
+    }
+    if (live_w && live_h) w = live_w, h = live_h;
     static const char* e = std::getenv("NX_WINDOW_SCRIPT");
     for (const char* p = e; p && *p;) {
         unsigned long long at = 0;
@@ -88,7 +103,7 @@ Scale wanted(uint64_t present) {
     double k = std::clamp(aspect / k169, 0.5, 3.0);
     if (std::fabs(k - 1.0) < 0.02) k = 1.0;
     k = std::round(k * 256.0) / 256.0;  // a few distinct values: each makes its own UI pipelines
-    const double native = std::getenv("NX_HANDHELD") ? 720.0 : 1080.0;
+    const double native = config_is_handheld() ? 720.0 : 1080.0;
     std::string r = setting("NX_RENDER_HEIGHT", "video.resolution", "native");
     double s = 1.0;
     if (r == "window") {
@@ -174,9 +189,21 @@ void uw_apply() {
 }
 
 bool uw_widen_texture(Texture& t) {
+    // Video planes (NV12: R8 fmt 0x1, RG8 fmt 0xd) and non-renderable textures must never be widened.
+    if (t.format == 0x01 || t.format == 0x0d) return false;
+
     // Render targets (flags 8), the window textures (display, 1) and the scene colour (flags 0); not packaged assets (4).
     static const bool off = std::getenv("NX_SCREEN_SCALE") && std::getenv("NX_SCREEN_SCALE")[0] == '0';
     if (off || t.target != 1 || (t.flags & 4) || t.width < 16 || t.height < 9) return false;
+
+    // Screen color targets in ACNH are only RGBA8 (0x25), RGBA16F (0x29), R11G11B10F (0x3f),
+    // sRGB RGBA8 (0x37, 0x38), A2B10G10R10 (0x3d), R32F (0x0a), and depth/stencil (0x31..0x36), or textures with render target flags (flags & 8).
+    const bool is_screen_fmt = (t.format == 0x25 || t.format == 0x29 || t.format == 0x3f ||
+                                t.format == 0x37 || t.format == 0x38 || t.format == 0x3d ||
+                                t.format == 0x0a || (t.format >= 0x31 && t.format <= 0x36));
+    const bool has_rt_flag = (t.flags & 8) != 0;
+    if (!is_screen_fmt && !has_rt_flag) return false;
+
     double r = double(t.width) / double(t.height);
     if (std::fabs(r - k169) / k169 > 0.03) return false;
     // The 1920x1080 and 1280x720 chains (halved down to the bloom's 30x17, heights padded: 480x272), not a UI layer
@@ -304,10 +331,12 @@ bool is_projection(uint64_t object) {
 
 // One projection for the wanted k (under g_cam_lock). `dirty`: mark it for sead to make the matrix again.
 void rewrite(uint64_t object, Camera& c, float k, bool dirty) {
-    const uint32_t asp_bits = 0x3fe38e39u, wide_bits = bits_of(float(16.0 / 9.0) * k);
+    const uint32_t wide_bits = bits_of(float(16.0 / 9.0) * k);
     auto* w = reinterpret_cast<volatile uint32_t*>(object);
     uint32_t a = w[0xB0 / 4], f = w[0xA0 / 4];
-    if (a == asp_bits) c.fov_base = f;            // the game's 16:9 view (new, or set again)
+    float cur_aspect = f32_of(a);
+    bool is_169 = std::fabs(cur_aspect - float(16.0 / 9.0)) < 0.01f;
+    if (is_169) c.fov_base = f;            // the game's 16:9 view (new, or set again)
     else if (!c.aspect_set || a != c.aspect_set) return;  // an aspect of the game's own: not ours to change
     else if (f != c.fov_set) c.fov_base = f;      // the game changed the field of view
     uint32_t fov = c.fov_base;
@@ -340,8 +369,14 @@ void projection_update(CPU& c) {
     std::lock_guard lk(g_cam_lock);
     auto it = g_cams.find(object);
     if (it == g_cams.end()) {
-        if (k == 1.0f) return;  // nothing to change yet: the object is kept from the first view that needs it
         it = g_cams.emplace(object, Camera{}).first;
+        static const bool trace = std::getenv("NX_UW_ORTHO_TRACE") != nullptr;
+        if (trace) {
+            auto* f = reinterpret_cast<volatile float*>(object + 0x98);
+            log("uwpersp %llx: near %g far %g fovy %g aspect %g offset %g,%g (from main+%llx)", (unsigned long long)object,
+                double(f[0]), double(f[1]), double(f[2]), double(f[6]), double(f[7]), double(f[8]),
+                (unsigned long long)(c.x[30] - kModuleBase));
+        }
         if (g_cams.size() == 1 || (g_cams.size() & (g_cams.size() - 1)) == 0)
             log("nvn: screen scale: %zu camera projections seen", g_cams.size());
     }
@@ -350,14 +385,127 @@ void projection_update(CPU& c) {
 }  // namespace
 NX_HOOK(0x37e5958, projection_update);
 
+// ---- UI projection -------------------------------------------------------------------------------------------------
+// sead::OrthoProjection (vtable main+0x4a65688; near +0x98, far +0x9c, top +0xa0, bottom +0xa4, left +0xa8, right
+// +0xac): its doUpdateMatrix (main+37e5b5c, slot 11) makes the matrix from those whenever the object is dirty. The
+// game's 2D layers (nn::ui2d layouts) are drawn through such projections of the 16:9 screen in layout units (-960..960
+// by 540..-540). An instruction hook on its first instruction (x0 = this) widens a 16:9 one by k (or makes it taller
+// by 1 / k), about its middle: the layouts then span the whole target, unstretched, the 16:9 part in the middle. As
+// with the cameras, the objects seen are kept, rewritten and marked dirty at each change of k, and values the game
+// sets again are followed. Projections of other shapes (shadow maps, square targets) are left alone.
+// NX_UW_ORTHO=0: off (the UI is then squeezed by its draws, nvn_draw.cpp).
+namespace {
+constexpr uint64_t kOrthoVtable = 0x4a65688;  // sead::OrthoProjection's vptr (main+, 3.0.2)
+struct Ortho {
+    uint32_t set[4] = {};  // top, bottom, left, right written last
+    float base[4] = {};    // the game's own
+    bool screen = false;   // 16:9: ours to widen
+};
+std::unordered_map<uint64_t, Ortho> g_orthos;  // under g_cam_lock
+
+bool is_ortho(uint64_t object) {
+    return *reinterpret_cast<volatile uint64_t*>(object) == kModuleBase + kOrthoVtable;
+}
+
+// One ortho projection for the wanted k (under g_cam_lock).
+void rewrite_ortho(uint64_t object, Ortho& o, float k, bool dirty) {
+    auto* w = reinterpret_cast<volatile uint32_t*>(object + 0xa0);
+    uint32_t cur[4] = {w[0], w[1], w[2], w[3]};
+    if (std::memcmp(cur, o.set, sizeof cur) != 0) {  // new, or set again by the game
+        for (int i = 0; i < 4; i++) o.base[i] = f32_of(cur[i]);
+        const float wd = std::fabs(o.base[3] - o.base[2]), ht = std::fabs(o.base[0] - o.base[1]);
+        o.screen = ht > 1e-6f && std::fabs(wd / ht - 16.0f / 9.0f) < 0.02f;
+    }
+    if (!o.screen) {
+        std::memcpy(o.set, cur, sizeof cur);
+        return;
+    }
+    const float kx = std::max(1.0f, k), ky = std::max(1.0f, 1.0f / k);
+    const float cy = (o.base[0] + o.base[1]) * 0.5f, cx = (o.base[2] + o.base[3]) * 0.5f;
+    const float v[4] = {cy + (o.base[0] - cy) * ky, cy + (o.base[1] - cy) * ky, cx + (o.base[2] - cx) * kx,
+                        cx + (o.base[3] - cx) * kx};
+    bool changed = false;
+    for (int i = 0; i < 4; i++) {
+        const uint32_t b = bits_of(v[i]);
+        changed |= b != cur[i];
+        w[i] = b, o.set[i] = b;
+    }
+    if (changed && dirty) {
+        reinterpret_cast<volatile uint8_t*>(object)[8] = 1;
+        reinterpret_cast<volatile uint8_t*>(object)[9] = 1;
+    }
+}
+
+bool ortho_off() {
+    static const bool off = std::getenv("NX_UW_ORTHO") && std::getenv("NX_UW_ORTHO")[0] == '0';
+    return off;
+}
+
+// main+37e5b5c, sead::OrthoProjection::doUpdateMatrix(this = x0, Matrix44f* dst = x1), before its first load.
+void ortho_update(CPU& c) {
+    const uint64_t object = c.x[0];
+    if (ortho_off() || !is_ortho(object)) return;
+    const float k = g_wanted_k.load(std::memory_order_relaxed);
+    std::lock_guard lk(g_cam_lock);
+    auto it = g_orthos.find(object);
+    if (it == g_orthos.end()) {
+        it = g_orthos.emplace(object, Ortho{}).first;
+        static const bool trace = std::getenv("NX_UW_ORTHO_TRACE") != nullptr;
+        if (trace) {
+            auto* f = reinterpret_cast<volatile float*>(object + 0x98);
+            log("uwortho %llx: near %g far %g top %g bottom %g left %g right %g (from main+%llx)",
+                (unsigned long long)object, double(f[0]), double(f[1]), double(f[2]), double(f[3]), double(f[4]),
+                double(f[5]), (unsigned long long)(c.x[30] - kModuleBase));
+        }
+    }
+    rewrite_ortho(object, it->second, k, false);  // made right after this
+}
+}  // namespace
+NX_HOOK(0x37e5b5c, ortho_update);
+
+bool uw_ortho_on() { return !ortho_off(); }
+
 void uw_cameras(uint64_t present) {
     uw_update(present);
-    if (camera_off()) return;
+    {  // DEBUG: a file uw_cams: every sead::PerspectiveProjection / OrthoProjection on the heap, once
+        static uint64_t next = 0;
+        if (uint64_t now = plat::monotonic_ns(); now >= next) {
+            next = now + 1'000'000'000;
+            std::string path = plat::data_root() + "/uw_cams";
+            if (FILE* fp = plat::fopen_utf8(path, "rb")) {
+                std::fclose(fp);
+                std::remove(path.c_str());
+                const uint64_t pv = kModuleBase + kProjectionVtable, ov = kModuleBase + kOrthoVtable;
+                for (uint64_t a = kHeapBase; a + 0xC0 <= kHeapBase + heap_size(); a += 8) {
+                    const uint64_t v = *reinterpret_cast<const uint64_t*>(a);
+                    if (v != pv && v != ov) continue;
+                    auto* f = reinterpret_cast<const float*>(a);
+                    std::lock_guard lk(g_cam_lock);
+                    log("uwcams %llx %s dirty %d/%d known %d m00 %g m11 %g dev00 %g dev11 %g | %g %g %g %g %g %g %g",
+                        (unsigned long long)a, v == pv ? "persp" : "ortho", reinterpret_cast<const uint8_t*>(a)[8],
+                        reinterpret_cast<const uint8_t*>(a)[9], int(g_cams.count(a) + g_orthos.count(a)), double(f[0xC / 4]),
+                        double(f[(0xC + 20) / 4]), double(f[0x4C / 4]), double(f[(0x4C + 20) / 4]), double(f[0x98 / 4]),
+                        double(f[0x9C / 4]), double(f[0xA0 / 4]), double(f[0xA4 / 4]), double(f[0xA8 / 4]), double(f[0xAC / 4]),
+                        double(f[0xB0 / 4]));
+                }
+            }
+        }
+    }
     static float last_k = 1.0f;
     const float k = g_wanted_k.load(std::memory_order_relaxed);  // the frames the game records from now on
-    if (k == last_k) return;  // the hook keeps every projection the game updates in step
+    if (k == last_k) return;  // the hooks keep every projection the game updates in step
     last_k = k;
     std::lock_guard lk(g_cam_lock);
+    if (!ortho_off())
+        for (auto it = g_orthos.begin(); it != g_orthos.end();) {
+            if (!is_ortho(it->first)) {
+                it = g_orthos.erase(it);
+                continue;
+            }
+            rewrite_ortho(it->first, it->second, k, true);
+            ++it;
+        }
+    if (camera_off()) return;
     for (auto it = g_cams.begin(); it != g_cams.end();) {
         if (!is_projection(it->first)) {  // freed or reused memory: no longer a projection
             it = g_cams.erase(it);
@@ -384,6 +532,7 @@ void uw_cameras(uint64_t present) {
 // Sizes and scales the game (or an animation) sets again are followed, as the cameras' fields are. NX_UW_LAYOUT=0: off.
 namespace {
 constexpr uint64_t kPictureVtable = 0x474d418, kWindowVtable = 0x474de58, kPartsVtable = 0x474d310;
+constexpr uint64_t kNullVtable = 0x474d1f8, kGameNullVtable = 0x4a85590;  // nn::ui2d::Pane, the game's null pane
 constexpr uint64_t kGamePictureVtable = 0x4a87220;  // the game's own Picture class (P_BlackBG_00, P_Up_00)
 struct PaneFix {
     uint32_t set[2] = {};   // the size (root) or scale (background) written last
@@ -403,14 +552,38 @@ void follow(uint64_t pane, uint32_t off, uint32_t set[2], float base[2], const f
     uint32_t cur[2] = {w[0], w[1]};
     if (cur[0] != set[0] || cur[1] != set[1]) base[0] = f32_of(cur[0]), base[1] = f32_of(cur[1]);
     if (!want) return;
+    bool changed = false;
     for (int i = 0; i < 2; i++) {
         uint32_t v = bits_of(add ? base[i] + want[i] : base[i] * want[i]);
+        changed |= v != cur[i];
         w[i] = v, set[i] = v;
     }
+    // Pane::Calculate makes the global matrix again only when flag 0x10 (+0x58) is set or the parent's was made again
+    // (main+27d548): what SetTranslate / SetScale / SetSize do, done here too.
+    if (changed) *reinterpret_cast<volatile uint8_t*>(pane + 0x58) |= 0x10;
 }
 
 bool is_screen_root(uint64_t pane, float w, float h) {
     return *reinterpret_cast<volatile uint64_t*>(pane + 0x18) == 0 && w >= 1279.0f && std::fabs(w / h - 16.0f / 9.0f) < 0.02f;
+}
+
+// NX_UW_LAYOUT_TRACE: a layout's panes (4 levels), with their global position and size in layout units.
+void trace_tree(uint64_t pane, int depth) {
+    char name[25] = {};
+    std::memcpy(name, reinterpret_cast<const char*>(pane + 0xb0), 24);
+    const float m00 = pane_f(pane, 0x70), m11 = pane_f(pane, 0x84);
+    log("uwtree %*s%-24s vt +%llx base %02x flags %02x pos %.0f,%.0f size %.0fx%.0f scale %.2f,%.2f global %.0f,%.0f x%.2f,%.2f",
+        depth * 2, "", name, (unsigned long long)(*reinterpret_cast<volatile uint64_t*>(pane) - kModuleBase),
+        *reinterpret_cast<volatile uint8_t*>(pane + 0x5b), *reinterpret_cast<volatile uint8_t*>(pane + 0x58),
+        double(pane_f(pane, 0x30)), double(pane_f(pane, 0x34)), double(pane_f(pane, 0x50)), double(pane_f(pane, 0x54)),
+        double(pane_f(pane, 0x48)), double(pane_f(pane, 0x4c)), double(pane_f(pane, 0x7c)), double(pane_f(pane, 0x8c)),
+        double(m00), double(m11));
+    if (depth >= 4) return;
+    const uint64_t head = pane + 0x20;
+    int n = 0;
+    for (uint64_t node = *reinterpret_cast<volatile uint64_t*>(head + 8); node && node != head && n < 64;
+         node = *reinterpret_cast<volatile uint64_t*>(node + 8), n++)
+        trace_tree(node - 8, depth + 1);
 }
 
 // main+27d4c0, nn::ui2d::Pane::Calculate(this = x0, DrawInfo&, CalculateContext&, bool), before its first instruction.
@@ -420,12 +593,37 @@ void pane_calculate(CPU& c) {
     const float k = g_wanted_k.load(std::memory_order_relaxed);
     if (off || !pane) return;
     const uint64_t vptr = *reinterpret_cast<volatile uint64_t*>(pane) - kModuleBase;
+    {  // DEBUG uw_probe file: a pane name; its state at each 30th Calculate
+        static char probe[32] = {};
+        static uint64_t next = 0, calls = 0;
+        static std::mutex m;
+        std::lock_guard lk(m);
+        if (uint64_t now = plat::monotonic_ns(); now >= next) {
+            next = now + 1'000'000'000;
+            std::memset(probe, 0, sizeof probe);
+            if (FILE* fp = plat::fopen_utf8(plat::data_root() + "/uw_probe", "rb")) {
+                if (std::fscanf(fp, "%31s", probe) != 1) probe[0] = 0;
+                std::fclose(fp);
+            }
+        }
+        if (probe[0] && std::strncmp(reinterpret_cast<const char*>(pane + 0xb0), probe, 24) == 0 && calls++ % 30 == 0)
+            log("uwprobe %llx %s vt +%llx parent %llx k %.4f flags %02x base %02x pos %.1f,%.1f scale %.3f,%.3f size %.0fx%.0f "
+                "global %.3f %.3f %.1f / %.3f %.3f %.1f lr main+%llx", (unsigned long long)pane, probe,
+                (unsigned long long)vptr, (unsigned long long)*reinterpret_cast<volatile uint64_t*>(pane + 0x18), double(k),
+                *reinterpret_cast<volatile uint8_t*>(pane + 0x58), *reinterpret_cast<volatile uint8_t*>(pane + 0x5b),
+                double(pane_f(pane, 0x30)), double(pane_f(pane, 0x34)), double(pane_f(pane, 0x48)), double(pane_f(pane, 0x4c)),
+                double(pane_f(pane, 0x50)), double(pane_f(pane, 0x54)), double(pane_f(pane, 0x70)), double(pane_f(pane, 0x74)),
+                double(pane_f(pane, 0x7c)), double(pane_f(pane, 0x80)), double(pane_f(pane, 0x84)), double(pane_f(pane, 0x8c)),
+                (unsigned long long)(c.x[30] - kModuleBase));
+    }
     const bool root = *reinterpret_cast<volatile uint64_t*>(pane + 0x18) == 0;  // a layout's root pane (any class)
     // Pictures and windows; and a screen mask (a parts pane named L_Mask: what is drawn beside it is cut away).
     const bool picture = vptr == kPictureVtable || vptr == kWindowVtable || vptr == kGamePictureVtable ||
                          (vptr == kPartsVtable && std::memcmp(reinterpret_cast<const char*>(pane + 0xb0), "L_Mask", 6) == 0);
+    // Plain panes (nn::ui2d::Pane, and the game's own null pane class): groups that may sit at a screen edge.
+    const bool group = !root && (vptr == kNullVtable || vptr == kGameNullVtable);
     static std::atomic<bool> touched{false};  // 16:9 since the start: nothing to look at
-    if ((!root && !picture) || (k == 1.0f && !touched.load(std::memory_order_relaxed))) return;
+    if ((!root && !picture && !group) || (k == 1.0f && !touched.load(std::memory_order_relaxed))) return;
     touched = true;
     std::lock_guard lk(g_pane_lock);
     auto it = g_panes.find(pane);
@@ -446,20 +644,55 @@ void pane_calculate(CPU& c) {
         if (!is_screen_root(pane, fix.base[0], fix.base[1])) return void(g_panes.erase(pane));
         const float want[2] = {kx, ky};
         follow(pane, 0x50, fix.set, fix.base, want);
-        static const bool trace = std::getenv("NX_UW_LAYOUT_TRACE") != nullptr;  // each screen layout's top panes, once
+        static const bool trace = std::getenv("NX_UW_LAYOUT_TRACE") != nullptr;  // each screen layout's tree, once
+        static std::map<uint64_t, int> traced;
+        if (trace && ++traced[pane] == 60) trace_tree(pane, 0);
+        return;
+    }
+    // The screen layout this pane is in (its top root, widened above), and whether a pane above it was moved or
+    // scaled here already.
+    uint64_t top = 0;
+    bool nested = false;
+    for (uint64_t p = *reinterpret_cast<volatile uint64_t*>(pane + 0x18), depth = 0; p && depth < 32; depth++) {
+        const uint64_t parent = *reinterpret_cast<volatile uint64_t*>(p + 0x18);
+        if (!parent) top = p;
+        else if (auto q = g_panes.find(p); q != g_panes.end() && (q->second.tset[0] | q->second.tset[1] | q->second.set[0]))
+            nested = true;
+        p = parent;
+    }
+    const auto r = top ? g_panes.find(top) : g_panes.end();
+    if (group) {
+        // A group placed at an edge of the 16:9 screen (the footer's button hints at x = +-960, a clock in a corner):
+        // its place in the outer eighth of the layout (the keyboard's outer key columns, at 86%, are not), and not itself
+        // as wide as the screen. Moved outward by the
+        // width (or height) the target adds on that side, so it stays at the edge of the window.
+        follow(pane, 0x30, fix.tset, fix.tbase, nullptr);
+        const uint64_t parent = *reinterpret_cast<volatile uint64_t*>(pane + 0x18);
+        const float pm00 = pane_f(parent, 0x70), pm11 = pane_f(parent, 0x84);
+        const float gx = pane_f(parent, 0x7c) + pm00 * fix.tbase[0], gy = pane_f(parent, 0x8c) + pm11 * fix.tbase[1];
+        float shift[2] = {0.0f, 0.0f};
+        if (r != g_panes.end() && !nested && std::fabs(pm00) > 1e-3f && std::fabs(pm11) > 1e-3f) {
+            const float W = r->second.base[0] * 0.5f, H = r->second.base[1] * 0.5f;
+            const float w = std::fabs(pane_f(pane, 0x50) * pm00), h = std::fabs(pane_f(pane, 0x54) * pm11);
+            if (std::fabs(gx) >= W * 0.88f && w < W * 0.6f) shift[0] = std::copysign(W * (kx - 1.0f), gx) / pm00;
+            if (std::fabs(gy) >= H * 0.88f && h < H * 0.6f) shift[1] = std::copysign(H * (ky - 1.0f), gy) / pm11;
+        }
+        if (shift[0] == 0.0f && shift[1] == 0.0f) {
+            if (fix.tset[0] | fix.tset[1]) {  // moved before: the game's place back
+                const float zero[2] = {0.0f, 0.0f};
+                follow(pane, 0x30, fix.tset, fix.tbase, zero, true);
+            }
+            g_panes.erase(pane);
+            return;
+        }
+        follow(pane, 0x30, fix.tset, fix.tbase, shift, true);
+        static const bool trace = std::getenv("NX_UW_LAYOUT_TRACE") != nullptr;
         static std::set<uint64_t> traced;
         if (trace && traced.insert(pane).second) {
-            const uint64_t head = pane + 0x20;
-            for (uint64_t n = *reinterpret_cast<volatile uint64_t*>(head + 8); n && n != head;
-                 n = *reinterpret_cast<volatile uint64_t*>(n + 8)) {
-                const uint64_t ch = n - 8;
-                char name[25] = {};
-                std::memcpy(name, reinterpret_cast<const char*>(ch + 0xb0), 24);
-                log("uwlayout root %llx: %-24s vt +%llx base %02x pos %.0f,%.0f size %.0fx%.0f scale %.2f,%.2f",
-                    (unsigned long long)pane, name, (unsigned long long)(*reinterpret_cast<volatile uint64_t*>(ch) - kModuleBase),
-                    *reinterpret_cast<volatile uint8_t*>(ch + 0x5b), double(pane_f(ch, 0x30)), double(pane_f(ch, 0x34)),
-                    double(pane_f(ch, 0x50)), double(pane_f(ch, 0x54)), double(pane_f(ch, 0x48)), double(pane_f(ch, 0x4c)));
-            }
+            char name[25] = {};
+            std::memcpy(name, reinterpret_cast<const char*>(pane + 0xb0), 24);
+            log("uwlayout edge %llx: %s at %.0f,%.0f moved %.0f,%.0f", (unsigned long long)pane, name, double(gx), double(gy),
+                double(shift[0]), double(shift[1]));
         }
         return;
     }
@@ -471,15 +704,6 @@ void pane_calculate(CPU& c) {
     const uint8_t basepos = *reinterpret_cast<volatile uint8_t*>(pane + 0x5b);
     const float cx = (basepos & 3) == 1 ? w * 0.5f : (basepos & 3) == 2 ? -w * 0.5f : 0.0f;  // the middle, from the
     const float cy = (basepos >> 2 & 3) == 1 ? -h * 0.5f : (basepos >> 2 & 3) == 2 ? h * 0.5f : 0.0f;  // base point
-    uint64_t p = *reinterpret_cast<volatile uint64_t*>(pane + 0x18), top = 0;
-    bool nested = false;
-    for (int depth = 0; p && depth < 32; depth++) {
-        uint64_t parent = *reinterpret_cast<volatile uint64_t*>(p + 0x18);
-        if (!parent) top = p;
-        else if (auto q = g_panes.find(p); q != g_panes.end() && q->second.tset[0] | q->second.tset[1] | q->second.set[0]) nested = true;
-        p = parent;
-    }
-    auto r = top ? g_panes.find(top) : g_panes.end();
     bool full = r != g_panes.end() && !nested, wide = false, tall = false;
     if (full) {
         const float m00 = pane_f(pane, 0x70), m03 = pane_f(pane, 0x7c), m11 = pane_f(pane, 0x84), m13 = pane_f(pane, 0x8c);
@@ -513,7 +737,19 @@ void pane_calculate(CPU& c) {
     }
     // As large as the layout: scaled evenly to cover the target. As wide (or as tall) only, a band at an edge (the
     // cutscene bars): stretched along it.
-    const float cover = std::max(kx, ky);
+    // DEBUG uw_cover file: a factor on the cover scale (A/B while the game runs)
+    static float dbg = 1.0f;
+    static uint64_t dbg_next = 0;
+    if (uint64_t now = plat::monotonic_ns(); now >= dbg_next) {
+        dbg_next = now + 1'000'000'000;
+        float f = 1.0f;
+        if (FILE* fp = plat::fopen_utf8(plat::data_root() + "/uw_cover", "rb")) {
+            if (std::fscanf(fp, "%f", &f) != 1) f = 1.0f;
+            std::fclose(fp);
+        }
+        dbg = f;
+    }
+    const float cover = std::max(kx, ky) * dbg;
     const float want[2] = {wide && tall ? cover : wide ? kx : 1.0f, wide && tall ? cover : tall ? ky : 1.0f};
     const float shift[2] = {-(want[0] - 1.0f) * fix.base[0] * cx, -(want[1] - 1.0f) * fix.base[1] * cy};  // middle kept
     follow(pane, 0x48, fix.set, fix.base, want);

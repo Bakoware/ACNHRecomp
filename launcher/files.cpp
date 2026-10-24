@@ -592,7 +592,14 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
     add("launcher.check.tools", in_path("curl") && in_path("tar") && in_path("bash"), Status::Error, found, missing);
     add("launcher.check.sdl", sdl3_dev_files(), Status::Error, found, missing);
     add("launcher.check.vulkan", vulkan_loader(), Status::Error, found, missing);
+#if defined(__APPLE__)
+    std::error_code ec;
+    bool movie = (std::system("pkg-config --exists vpx vorbis >/dev/null 2>&1") == 0) ||
+                 (fs::exists("/opt/homebrew/include/vpx/vpx_decoder.h", ec) && fs::exists("/opt/homebrew/include/vorbis/codec.h", ec)) ||
+                 (fs::exists("/usr/local/include/vpx/vpx_decoder.h", ec) && fs::exists("/usr/local/include/vorbis/codec.h", ec));
+#else
     bool movie = std::system("pkg-config --exists vpx vorbis >/dev/null 2>&1") == 0;
+#endif
     add("launcher.check.movie", movie, Status::Warning, found, tr("launcher.check.movie_missing"));
 #endif
     uint64_t free = free_space(install_dir);

@@ -227,6 +227,60 @@ void feed_input(ImGuiIO& io) {
         }
 }
 
+void draw_fps_overlay(float scale) {
+    using clock = std::chrono::steady_clock;
+    static auto last_present = clock::now();
+    static float s_fps = 0.0f;
+    static int s_frames = 0;
+    static float s_accum_sec = 0.0f;
+
+    auto now = clock::now();
+    float dt = std::chrono::duration<float>(now - last_present).count();
+    last_present = now;
+
+    if (dt > 0.0f && dt < 0.5f) {
+        s_accum_sec += dt;
+        s_frames++;
+        if (s_accum_sec >= 0.25f) {
+            s_fps = float(s_frames) / s_accum_sec;
+            s_accum_sec = 0.0f;
+            s_frames = 0;
+        }
+    } else {
+        s_accum_sec = 0.0f;
+        s_frames = 0;
+    }
+
+    if (s_fps <= 0.0f) {
+        ImGuiIO& io = ImGui::GetIO();
+        s_fps = io.Framerate > 0.0f ? io.Framerate : 30.0f;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    const float margin = 12.0f * scale;
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, margin), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.5f);
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f * scale, 4.0f * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs;
+
+    if (ImGui::Begin("##FPSOverlay", nullptr, flags)) {
+        ImGui::Text("%.1f FPS", s_fps);
+    }
+    ImGui::End();
+
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(3);
+}
+
 }  // namespace
 
 void ui_vulkan_ready(PFN_vkGetInstanceProcAddr gipa, VkInstance instance, VkPhysicalDevice physical, VkDevice device,
@@ -250,7 +304,8 @@ void ui_record(VkCommandBuffer cb, VkImage image, VkFormat format, VkExtent2D ex
     static const auto t0 = clock::now();
     const bool hint = g_first_hint && clock::now() - t0 < std::chrono::seconds(12);
     if (!hint) g_first_hint = false;
-    if ((!g_visible && !hint) || !extent.width || !extent.height) return;
+    const bool show_fps = config_show_fps();
+    if ((!g_visible && !hint && !show_fps) || !extent.width || !extent.height) return;
     if (!init_imgui(format)) return;
     ImGuiIO& io = ImGui::GetIO();
     float scale = theme_scale(float(extent.width), float(extent.height));
@@ -269,8 +324,11 @@ void ui_record(VkCommandBuffer cb, VkImage image, VkFormat format, VkExtent2D ex
     ImGui::PushFont(g_font_body);
     if (g_visible) {
         if (!settings_draw(scale, g_font_title)) g_visible = false;  // closed from the screen
-    } else {
+    } else if (hint) {
         settings_hint(scale);
+    }
+    if (show_fps) {
+        draw_fps_overlay(scale);
     }
     ImGui::PopFont();
     ImGui::Render();

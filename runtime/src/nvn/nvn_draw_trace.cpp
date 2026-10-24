@@ -406,7 +406,7 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
         if (std::getenv("NX_TRACE_VS_BLOCKS"))
             if (const Range& u = g_state.uniforms[0][0]; u.address)
                 if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
-                    for (int row = 0; row < std::min<int>(int(u.size / 16), 24); row++)
+                    for (int row = 0; row < std::min<int>(int(u.size / 16), 36); row++)
                         log("  vs c3[%d]: %g %g %g %g", row, f[4 * row], f[4 * row + 1], f[4 * row + 2], f[4 * row + 3]);
         for (int blk = 1; blk <= 3 && std::getenv("NX_TRACE_VS_BLOCKS"); blk++)
             if (const Range& u = g_state.uniforms[0][blk]; u.address)

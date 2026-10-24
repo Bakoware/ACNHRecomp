@@ -325,7 +325,9 @@ static void sample_input() {
     PadState p;
     const InputOptions& opt = input_options();
     SDL_Gamepad*& pad = g_gamepad;
-    if (!pad) {
+    static uint64_t next_scan = 0;  // no controller: look for one 4 times a second, not on every loop
+    if (!pad && monotonic_ns() >= next_scan) {
+        next_scan = monotonic_ns() + 250'000'000;
         int n = 0;
         SDL_JoystickID* ids = SDL_GetGamepads(&n);
         if (ids && n > 0) pad = SDL_OpenGamepad(ids[0]);
@@ -668,9 +670,12 @@ int main() {
     nx::plat::start_thread([](void*) { game_thread(); nx::plat::exit_process(0); }, nullptr, 64ull << 20);
 
     using namespace nx::plat;
+    // One Cocoa event pump per turn (SDL_PollEvent pumps on every call: each pump walks AppKit's gesture recognizers,
+    // ~0.25 ms on an M1), then the queue drained without pumping; a turn every 4 ms (250 Hz) when idle.
     for (;;) {
         SDL_Event e;
-        while (SDL_PollEvent(&e)) {
+        SDL_PumpEvents();
+        while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) {
             nx::ui::ui_event(e);
             switch (e.type) {
             case SDL_EVENT_QUIT:
@@ -702,6 +707,6 @@ int main() {
         }
         for (auto& fn : work) fn();
         sample_input();
-        SDL_Delay(2);
+        SDL_Delay(4);
     }
 }

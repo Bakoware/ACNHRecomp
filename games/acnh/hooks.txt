@@ -7,6 +7,7 @@
 3dc3298  # character animation graph update (main+3dc3210): s0 = the step for every root node (main+3dbf770)
 3a1d614  # layout animator list update (main+3a1d5e0): s0 = this->step() (vtable+0x128), then UpdateFrame(step) each
 27d4c0  # nn::ui2d::Pane::Calculate entry (x0 = pane): layout root and full-screen panes at other aspects (nvn_ultrawide.cpp)
+37e5b5c  # sead::OrthoProjection::doUpdateMatrix entry (x0 = this): the 2D UI's projection over the whole screen (nvn_ultrawide.cpp)
 37e5958  # sead::PerspectiveProjection::doUpdateMatrix entry (x0 = this): wider/taller screen (nvn_ultrawide.cpp)
 6d659c  # job worker's Havok thread registration (main+6d6514): skip it while the Phive singleton is half built
 31c3f98  # guiTouchManager::update (main+31c3b50) before its hit tests: window buttons kept reachable (pointer.cpp)

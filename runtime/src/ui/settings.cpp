@@ -63,6 +63,31 @@ void toast(const std::string& text) {
 
 void apply_live(const std::string& key, const std::string& value) {
     if (key == "video.fullscreen") plat::set_fullscreen(value == "1");
+    else if (key == "video.show_fps") {
+#if defined(_WIN32)
+        _putenv_s("NX_SHOW_FPS", value.c_str());
+#else
+        setenv("NX_SHOW_FPS", value.c_str(), 1);
+#endif
+    }
+    else if (key == "video.mode") {
+#if defined(_WIN32)
+        if (value == "handheld") _putenv_s("NX_HANDHELD", "1");
+        else _putenv_s("NX_HANDHELD", "0");
+#else
+        if (value == "handheld") setenv("NX_HANDHELD", "1", 1);
+        else unsetenv("NX_HANDHELD");
+#endif
+    }
+    else if (key == "video.upscaler") {
+#if defined(_WIN32)
+        if (value == "fsr") _putenv_s("NX_FSR", "1");
+        else _putenv_s("NX_FSR", "0");
+#else
+        if (value == "fsr") setenv("NX_FSR", "1", 1);
+        else unsetenv("NX_FSR");
+#endif
+    }
     else if (key == "audio.volume") plat::set_master_volume(std::clamp(std::atoi(value.c_str()), 0, 100) / 100.0f);
     else if (key == "ui.language") ui_set_language(value);
     if (config_needs_restart(key)) g_restart_note = true;
@@ -71,6 +96,13 @@ void apply_live(const std::string& key, const std::string& value) {
 void store(const std::string& key, const std::string& value) {
     if (config_get(key) == value) return;
     config_set(key, value);
+    if (key == "video.preset") {  // a preset writes its settings
+        for (auto& [k, v] : config_preset(value))
+            if (config_get(k) != v) config_set(k, v), apply_live(k, v);
+    } else {  // a setting changed by hand away from the preset's value: the preset becomes "custom"
+        for (auto& [k, v] : config_preset(config_get("video.preset", "custom")))
+            if (k == key && v != value) config_set("video.preset", "custom");
+    }
     config_save();
     apply_live(key, value);
 }
@@ -202,6 +234,12 @@ bool lsfg_available() {
 }
 
 void page_video() {
+    row("video.preset", "video.preset.desc", [&](float w) {
+        combo("video.preset", "custom",
+              {{"custom", tr("video.preset.custom")}, {"quality", tr("video.preset.quality")},
+               {"balanced", tr("video.preset.balanced")}, {"low", tr("video.preset.low")}},
+              w);
+    });
     row("video.display", nullptr, [&](float w) {
         combo("video.fullscreen", "0", {{"0", tr("video.display.windowed")}, {"1", tr("video.display.fullscreen")}}, w);
     });
@@ -211,6 +249,7 @@ void page_video() {
                {"1920x1080", "1920 × 1080"}, {"2560x1440", "2560 × 1440"}, {"3840x2160", "3840 × 2160"}},
               w);
     });
+    row("video.show_fps", "video.show_fps.desc", [&](float) { toggle("video.show_fps", config_show_fps()); });
     row("video.mode", nullptr, [&](float w) {
         combo("video.mode", "docked", {{"docked", tr("video.render.docked")}, {"handheld", tr("video.render.handheld")}}, w);
     });

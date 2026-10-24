@@ -274,14 +274,64 @@ inline uint16_t bswap(uint16_t v) { return __builtin_bswap16(v); }
 inline uint32_t bswap(uint32_t v) { return __builtin_bswap32(v); }
 inline uint64_t bswap(uint64_t v) { return __builtin_bswap64(v); }
 
-// CRC32 / CRC32C (reflected polynomials), `size` bytes of `data` into `acc`.
+// CRC32 / CRC32C (reflected polynomials), `size` bytes of `data` into `acc`. The game hashes names with CRC32B
+// (~15k sites in main). Hosts with the instructions use them (AArch64: both polynomials; x86 SSE4.2: CRC32C only);
+// otherwise a table, a byte at a time. The bit-serial loop this replaces cost ~6 ns a byte (1 ns with __crc32b).
+// `poly` is a constant at every call site, so the choice below folds away.
+namespace crc_detail {
+struct Table {
+    uint32_t t[256];
+    constexpr explicit Table(uint32_t poly) : t{} {
+        for (uint32_t n = 0; n < 256; n++) {
+            uint32_t v = n;
+            for (int k = 0; k < 8; k++) v = (v >> 1) ^ ((v & 1) ? poly : 0);
+            t[n] = v;
+        }
+    }
+};
+inline constexpr Table kCrc32{0xEDB88320u}, kCrc32c{0x82F63B78u};
+}  // namespace crc_detail
+
 template <int size>
-inline uint32_t crc32(uint32_t acc, uint64_t data, uint32_t poly) {
+inline uint32_t crc32_soft(uint32_t acc, uint64_t data, uint32_t poly) {
+    const uint32_t* t = poly == 0xEDB88320u ? crc_detail::kCrc32.t : poly == 0x82F63B78u ? crc_detail::kCrc32c.t : nullptr;
+    if (t) {
+        for (int k = 0; k < size; k++) acc = t[(acc ^ uint32_t(data >> (8 * k))) & 0xFF] ^ (acc >> 8);
+        return acc;
+    }
     for (int k = 0; k < size * 8; k++) {
         uint32_t bit = (acc ^ uint32_t(data >> k)) & 1;
         acc = (acc >> 1) ^ (bit ? poly : 0);
     }
     return acc;
+}
+
+template <int size>
+NX_INLINE uint32_t crc32(uint32_t acc, uint64_t data, uint32_t poly) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32) && (defined(__clang__) || defined(__GNUC__)) && !defined(NX_SOFT_CRC)
+    if (poly == 0xEDB88320u) {
+        if constexpr (size == 1) return __builtin_arm_crc32b(acc, uint8_t(data));
+        else if constexpr (size == 2) return __builtin_arm_crc32h(acc, uint16_t(data));
+        else if constexpr (size == 4) return __builtin_arm_crc32w(acc, uint32_t(data));
+        else return __builtin_arm_crc32d(acc, data);
+    }
+    if (poly == 0x82F63B78u) {
+        if constexpr (size == 1) return __builtin_arm_crc32cb(acc, uint8_t(data));
+        else if constexpr (size == 2) return __builtin_arm_crc32ch(acc, uint16_t(data));
+        else if constexpr (size == 4) return __builtin_arm_crc32cw(acc, uint32_t(data));
+        else return __builtin_arm_crc32cd(acc, data);
+    }
+#elif (defined(__x86_64__) || defined(__i386__)) && defined(__SSE4_2__) && !defined(NX_SOFT_CRC)
+    if (poly == 0x82F63B78u) {
+        if constexpr (size == 1) return _mm_crc32_u8(acc, uint8_t(data));
+        else if constexpr (size == 2) return _mm_crc32_u16(acc, uint16_t(data));
+        else if constexpr (size == 4) return _mm_crc32_u32(acc, uint32_t(data));
+#if defined(__x86_64__)
+        else return uint32_t(_mm_crc32_u64(acc, data));
+#endif
+    }
+#endif
+    return crc32_soft<size>(acc, data, poly);
 }
 
 inline uint64_t ror64(uint64_t v, unsigned s) { return std::rotr(v, int(s & 63)); }
@@ -375,7 +425,22 @@ inline uint16_t f32_to_f16(float f) {
 
 // Float -> integer with AArch64 saturation (NaN -> 0). Rounding already applied by the caller.
 template <typename I, typename F>
-inline I fcvt_sat(F v) {
+NX_INLINE I fcvt_sat(F v) {
+#if defined(__aarch64__) && (defined(__clang__) || defined(__GNUC__))
+    // The host's FCVTZS/FCVTZU are the guest's: NaN -> 0, out of range saturates (the value is already rounded).
+    if constexpr ((sizeof(I) == 4 || sizeof(I) == 8) && (std::is_same_v<F, float> || std::is_same_v<F, double>)) {
+    I r;
+    if constexpr (sizeof(F) == 4 && sizeof(I) == 4 && std::is_signed_v<I>) __asm__("fcvtzs %w0, %s1" : "=r"(r) : "w"(v));
+    else if constexpr (sizeof(F) == 4 && sizeof(I) == 4) __asm__("fcvtzu %w0, %s1" : "=r"(r) : "w"(v));
+    else if constexpr (sizeof(F) == 4 && std::is_signed_v<I>) __asm__("fcvtzs %x0, %s1" : "=r"(r) : "w"(v));
+    else if constexpr (sizeof(F) == 4) __asm__("fcvtzu %x0, %s1" : "=r"(r) : "w"(v));
+    else if constexpr (sizeof(I) == 4 && std::is_signed_v<I>) __asm__("fcvtzs %w0, %d1" : "=r"(r) : "w"(v));
+    else if constexpr (sizeof(I) == 4) __asm__("fcvtzu %w0, %d1" : "=r"(r) : "w"(v));
+    else if constexpr (std::is_signed_v<I>) __asm__("fcvtzs %x0, %d1" : "=r"(r) : "w"(v));
+    else __asm__("fcvtzu %x0, %d1" : "=r"(r) : "w"(v));
+    return r;
+    }
+#endif
     if (std::isnan(v)) return 0;
     if (v <= F(std::numeric_limits<I>::min())) return std::numeric_limits<I>::min();
     if (v >= F(std::numeric_limits<I>::max())) return std::numeric_limits<I>::max();

@@ -71,13 +71,32 @@ std::vector<Scripted> input_script() {
     return e ? parse_script(e, 0) : std::vector<Scripted>{};
 }
 
+// The script (NX_INPUT and what input_live adds), shared by the pad, the touch screen and the mouse.
+std::mutex g_script_lock;
+std::vector<Scripted>& script() {
+    static std::vector<Scripted> s = input_script();
+    return s;
+}
+
 // Live input for interactive test runs: a file named input_live in the data folder, holding the NX_INPUT syntax
-// with frames counted from when it is read, is added to the script and deleted (checked every 15 frames). Together
-// with the dump_frames file, a session can be driven step by step past the scripted intro.
+// with frames counted from when it is read (buttons, sticks, touches and mouse moves), is added to the script and
+// deleted (checked every 15 frames). Together with the dump_frames file, a session can be driven step by step past
+// the scripted intro (tools/play/live.py).
 void poll_live(std::vector<Scripted>& script) {
     static uint64_t next_check = 0;
     if (g_frame < next_check) return;
     next_check = g_frame + 15;
+    // NX_LIVE_FRAME=1: the frame reached, in the data folder's live_frame file (written whole, then renamed), so the
+    // driver waits for its input to have played out in game frames, whatever the frame rate.
+    static const bool frame_file = std::getenv("NX_LIVE_FRAME") != nullptr;
+    if (frame_file) {
+        static const std::string out = data_root() + "/live_frame", tmp = out + ".tmp";
+        if (FILE* f = fopen_utf8(tmp, "wb")) {
+            std::fprintf(f, "%llu\n", (unsigned long long)g_frame.load());
+            std::fclose(f);
+            std::rename(tmp.c_str(), out.c_str());
+        }
+    }
     static const std::string path = data_root() + "/input_live";
     FILE* f = fopen_utf8(path, "rb");
     if (!f) return;
@@ -97,9 +116,8 @@ std::atomic<uint64_t> g_held_buttons{0}, g_held_from{0}, g_held_until{0};
 
 PadState read() {
     PadState p;
-    static std::vector<Scripted> script = input_script();
-    static std::mutex m;
-    std::lock_guard lk(m);
+    std::lock_guard lk(g_script_lock);
+    std::vector<Scripted>& script = nx::script();
     poll_live(script);
     for (const auto& s : script)
         if (g_frame >= s.frame && g_frame < s.frame + 8) p.buttons |= s.buttons;
@@ -112,8 +130,13 @@ PadState read() {
     last = p.buttons;
     if (g_frame >= g_held_from && g_frame < g_held_until) p.buttons |= g_held_buttons;
     read_pad(p);
-    for (const auto& s : script)  // after the pad: the script's stick wins while it holds it
-        if ((s.lx || s.ly) && g_frame >= s.frame && g_frame < s.frame + 8) p.lx = s.lx, p.ly = s.ly;
+    bool stick = false;  // after the pad: the script's stick wins while it holds it; LUp with LLeft is a diagonal
+    for (const auto& s : script)
+        if ((s.lx || s.ly) && g_frame >= s.frame && g_frame < s.frame + 8) {
+            if (!stick) p.lx = p.ly = 0, stick = true;
+            if (s.lx) p.lx = s.lx;
+            if (s.ly) p.ly = s.ly;
+        }
     // Stick directions as buttons, like the hid sysmodule reports them.
     constexpr int32_t t = kStickMax / 2;
     if (p.lx < -t) p.buttons |= kStickLLeft;
@@ -279,9 +302,11 @@ struct Hover {
 Hover g_hover;
 
 Touch current_touch() {
-    static const std::vector<Scripted> script = input_script();
-    for (const auto& s : script)
-        if (s.touch && g_frame >= s.frame && g_frame < s.frame + 8) return {true, s.tx, s.ty};
+    {
+        std::lock_guard lk(g_script_lock);
+        for (const auto& s : script())
+            if (s.touch && g_frame >= s.frame && g_frame < s.frame + 8) return {true, s.tx, s.ty};
+    }
     std::lock_guard lk(g_touch_lock);
     Touch t = g_mouse;
     if (g_mouse_tap) t.down = true, g_mouse_tap = false;
@@ -387,11 +412,16 @@ void GetPlayerLedPattern(CPU& c) { c.x[0] = 1; }
 }  // namespace
 
 bool mouse_take_hover(uint32_t& x, uint32_t& y) {
-    static const std::vector<Scripted> script = input_script();
     static uint64_t scripted_until = 0, taken = 0;
+    std::vector<Scripted> moves;  // copied first: the pad holds the script's lock while it reads the platform
+    {
+        std::lock_guard lk(g_script_lock);
+        for (const auto& s : script())
+            if (s.move && s.frame <= g_frame && s.frame >= scripted_until) moves.push_back(s);
+    }
     std::lock_guard lk(g_touch_lock);
-    for (const auto& s : script)  // a scripted move counts once, on its frame
-        if (s.move && s.frame <= g_frame && s.frame >= scripted_until) {
+    for (const auto& s : moves)  // a scripted move counts once, on its frame
+        if (s.frame >= scripted_until) {
             g_hover = {s.tx, s.ty, g_hover.moves + 1};
             scripted_until = s.frame + 1;
         }

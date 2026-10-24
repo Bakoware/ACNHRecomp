@@ -47,6 +47,7 @@ extern UwTarget g_uw;
 // A guest viewport/scissor span on a scaled target: offset and size times `f`, kept inside `extent`.
 void uw_span(int32_t& x, int32_t& w, uint32_t extent, float f);
 void uw_cameras(uint64_t present);     // camera aspect patch (called at each present)
+bool uw_ortho_on();                    // the UI's projections are widened at the source (no UI squeeze)
 void uw_scan(uint64_t present);        // NX_UW_SCAN debug
 void uw_ui_vertex_shader(const ShaderInfo* vs);  // learned: drew into a UI layer target
 bool uw_is_ui_vertex_shader(const ShaderInfo* vs);

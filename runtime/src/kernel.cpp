@@ -116,8 +116,37 @@ NX_HLE("_ZN2nn2os13GetSystemTickEv", hle_get_system_tick);
 
 // ---- waiting --------------------------------------------------------------------------------------------------
 
+// Wake-ups made while the kernel lock is held are sent once it is released (signal, unlock and arbitration svcs): a
+// thread notified under the lock woke up only to block on the lock again, a second context switch per hand-off. The
+// woken thread re-checks its `wake` flag under the lock, so a late notify loses nothing. A svc that blocks itself
+// (block()) sends what it has before it sleeps.
+struct DeferredWakes {
+    DeferredWakes* outer;
+    std::vector<std::shared_ptr<KThread>> threads;
+    DeferredWakes();
+    ~DeferredWakes();
+    void flush() {
+        for (auto& t : threads) t->cv.notify_one();
+        threads.clear();
+    }
+};
+static thread_local DeferredWakes* t_wakes = nullptr;
+DeferredWakes::DeferredWakes() : outer(t_wakes) { t_wakes = this; }
+DeferredWakes::~DeferredWakes() {  // after the svc's own lock guard is gone (declared before it)
+    t_wakes = outer;
+    flush();
+}
+static bool deferred_wakes_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_DEFER_WAKES");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+
 // Wait (with g_k held) until `self->wake` or timeout (ns, <0 = forever). Returns false on timeout.
 static bool block(std::unique_lock<std::recursive_mutex>& lk, KThread* self, int64_t timeout_ns) {
+    if (t_wakes) t_wakes->flush();
     if (timeout_ns < 0) {
         self->cv.wait(lk, [&] { return self->wake; });
         return true;
@@ -130,6 +159,11 @@ static bool block(std::unique_lock<std::recursive_mutex>& lk, KThread* self, int
 static void wake(KThread* t) {
     t->wake = true;
     t->wait_result = 0;
+    if (DeferredWakes* d = t_wakes; d && deferred_wakes_on())
+        if (auto sp = t->self.lock()) {
+            d->threads.push_back(std::move(sp));
+            return;
+        }
     t->cv.notify_one();
 }
 
@@ -177,12 +211,14 @@ static uint32_t svc_arbitrate_lock(uint32_t owner, uint64_t addr, uint32_t tag) 
 }
 
 static uint32_t svc_arbitrate_unlock(uint64_t addr) {
+    DeferredWakes wakes;  // sent after lk is released
     std::unique_lock lk(g_k);
     unlock_mutex(addr);
     return 0;
 }
 
 static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t tag, int64_t timeout) {
+    DeferredWakes wakes;  // sent after lk is released
     std::unique_lock lk(g_k);
     KThread* self = t_self;
     // Like Horizon: the condvar's "has waiters" word is written BEFORE the mutex is released. The SDK's Signal/
@@ -208,6 +244,7 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
 }
 
 static uint32_t svc_signal_process_wide_key(uint64_t key, int32_t count) {
+    DeferredWakes wakes;  // sent after lk is released
     std::unique_lock lk(g_k);
     int n = 0;
     for (size_t i = 0; i < g_cv_waiters.size() && (count <= 0 || n < count);) {
@@ -297,6 +334,7 @@ static uint32_t svc_signal_to_address(uint64_t addr, uint32_t type, int32_t valu
     if (addr == trace_addr())
         log("arb: thread %x signals %llx type %u value %d count %d (memory %d)", t_self ? t_self->handle : 0,
             (unsigned long long)addr, type, value, count, int32_t(load32(addr)));
+    DeferredWakes wakes;  // sent after lk is released
     std::unique_lock lk(g_k);
     int waiters = int(std::count_if(g_addr_waiters.begin(), g_addr_waiters.end(), [&](KThread* t) { return t->wait_addr == addr; }));
     switch (type) {

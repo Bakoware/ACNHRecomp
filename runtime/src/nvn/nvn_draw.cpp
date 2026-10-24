@@ -355,9 +355,21 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     vertex_read_barrier(cb, vs);  // G4
     // Is this draw's target a scaled screen target (viewport, scissor, render scale, UI squeeze; nvn_ultrawide.cpp)
     g_uw = UwTarget{};
-    if (GpuImage* wi = t.color_count && t.colors[0] ? image_of(t.colors[0]) : (t.depth ? image_of(t.depth) : nullptr);
-        wi && wi->uw && (wi->sx != 1.0f || wi->sy != 1.0f))
-        g_uw = {true, wi->sx, wi->sy};
+    GpuImage* wi = nullptr;
+    for (uint32_t i = 0; i < t.color_count; i++) {
+        if (t.colors[i]) {
+            if (auto* img = image_of(t.colors[i]); img && img->uw && (img->sx != 1.0f || img->sy != 1.0f)) {
+                wi = img;
+                break;
+            }
+        }
+    }
+    if (!wi && t.depth) {
+        if (auto* img = image_of(t.depth); img && img->uw && (img->sx != 1.0f || img->sy != 1.0f)) {
+            wi = img;
+        }
+    }
+    if (wi) g_uw = {true, wi->sx, wi->sy};
     bool need_break = gathered & kNeedBreak;
     if (gathered & kSampledPending) clears_flush(cb);  // cleared (and stored) before it is sampled
     static const bool bytes = std::getenv("NX_TARGETS_MEMCMP") != nullptr;  // bisecting
@@ -421,6 +433,10 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     // NX_UW_UI=learn: only the vertex shaders learned above; default: every draw without depth test (screen-space UI).
     static const bool ui_learn = std::getenv("NX_UW_UI") && std::string(std::getenv("NX_UW_UI")) == "learn";
     const bool ui_pick = !cam_patch || (ui_learn ? uw_is_ui_vertex_shader(vs) : !g_state.depth.depth_test);
+    // With the UI's own projections widened (nvn_ultrawide.cpp, the default) its geometry is right already: only its
+    // scissor (below) is still taken about the middle.
+    static const bool ortho = uw_ortho_on();
+    float ui_x = 0;  // what key.uw_x would be: the scissor of a UI draw
     if (aniso && uw_vs_scaled(vs) && ui_pick) {
         // A draw that samples a widened render target is a screen-space pass (post chain, composite) or a picture
         // of the screen (the blurred capture behind a menu): it already covers the whole target. (Only short draws
@@ -429,14 +445,36 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         for (const ResolvedTexture& r : g_textures.resolved)
             if (r.texture)
                 if (GpuImage* si = image_of(r.texture); si && si->uw && (si->sx != si->sy)) samples_wide = true;
-        if (!samples_wide) key.uw_x = g_uw.ax() < 1.0f ? g_uw.ax() : -g_uw.ay();
+        if (!samples_wide) ui_x = g_uw.ax() < 1.0f ? g_uw.ax() : -g_uw.ay();
+        static bool dbg_nosq = false;  // DEBUG: a file uw_nosqueeze turns the squeeze off while it exists
+        static uint64_t dbg_next = 0;
+        if (g_stats.total >= dbg_next) {
+            dbg_next = g_stats.total + 3000;
+            FILE* f = plat::fopen_utf8(plat::data_root() + "/uw_nosqueeze", "rb");
+            dbg_nosq = f != nullptr;
+            if (f) std::fclose(f);
+        }
+        if (!ortho && !dbg_nosq) key.uw_x = ui_x;
+        // Widened projection: a quad of the screen (the 3D scene's composite, the blurred capture behind a menu) is
+        // laid out over the 16:9 part like the rest of the layer; it is stretched back over the whole target.
+        else if (samples_wide) key.uw_x = g_uw.ax() < 1.0f ? 1.0f / g_uw.ax() : -1.0f / g_uw.ay();
     }
-    if (g_uw.on) {  // NX_UW_TRACE=<first draw>:<count>: draws (wide = a scaled target)
+    if (g_uw.on) {  // NX_UW_TRACE=<first draw>:<count>, or a file uw_trace holding <count>: draws (wide = a scaled target)
         static const char* e = std::getenv("NX_UW_TRACE");
-        static uint64_t from = 0, n = 0;
+        static uint64_t from = 0, n = 0, next_check = 0;
         static bool init = [&] { if (e) std::sscanf(e, "%lu:%lu", &from, &n); return true; }();
         (void)init;
-        if (e && g_stats.total >= from && g_stats.total < from + n) {
+        if (g_stats.total >= next_check) {
+            next_check = g_stats.total + 2000;
+            std::string path = plat::data_root() + "/uw_trace";
+            if (FILE* f = plat::fopen_utf8(path, "rb")) {
+                unsigned long long c = 0;
+                if (std::fscanf(f, "%llu", &c) == 1 && c) from = g_stats.total, n = c;
+                std::fclose(f);
+                std::remove(path.c_str());
+            }
+        }
+        if (n && g_stats.total >= from && g_stats.total < from + n) {
             GpuImage* wi = t.color_count && t.colors[0] ? image_of(t.colors[0]) : nullptr;
             const Texture* tx = t.color_count && t.colors[0] ? get<Texture>(t.colors[0]) : nullptr;
             std::string smp;
@@ -509,9 +547,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
                 p0 = std::clamp(p0, 0.0, double(extent)), p1 = std::clamp(p1, 0.0, double(extent));
                 p = int32_t(std::lround(p0)), n = int32_t(std::lround(p1 - p0));
             };
-            if (key.uw_x > 0) squeezed(x, w, g_pass_extent.width, g_uw.sx, g_uw.s());
+            if (ui_x > 0) squeezed(x, w, g_pass_extent.width, g_uw.sx, g_uw.s());
             else uw_span(x, w, g_pass_extent.width, g_uw.sx);
-            if (key.uw_x < 0) squeezed(y, h, g_pass_extent.height, g_uw.sy, g_uw.s());
+            if (ui_x < 0) squeezed(y, h, g_pass_extent.height, g_uw.sy, g_uw.s());
             else uw_span(y, h, g_pass_extent.height, g_uw.sy);
             sc.offset.x = x, sc.extent.width = uint32_t(w), sc.offset.y = y, sc.extent.height = uint32_t(h);
         }

@@ -288,14 +288,62 @@ if(PKG_CONFIG_FOUND AND NOT ANDROID)
     pkg_check_modules(VPX QUIET IMPORTED_TARGET vpx)
     pkg_check_modules(VORBIS QUIET IMPORTED_TARGET vorbis)
 endif()
+set(NX_VPX_TARGET PkgConfig::VPX)
+set(NX_VORBIS_TARGET PkgConfig::VORBIS)
+# Without pkg-config (a Mac with Homebrew's libvpx and libvorbis but no pkgconf) the libraries are looked up
+# directly; before, such a build quietly had black movies.
+if(NOT ANDROID AND NOT VPX_FOUND)
+    find_path(NX_VPX_INCLUDE vpx/vpx_decoder.h
+              HINTS $ENV{HOMEBREW_PREFIX}/include /opt/homebrew/include /opt/homebrew/opt/libvpx/include
+                    /usr/local/include /usr/local/opt/libvpx/include
+              PATHS /opt/homebrew/include /usr/local/include)
+    find_library(NX_VPX_LIBRARY vpx
+                 HINTS $ENV{HOMEBREW_PREFIX}/lib /opt/homebrew/lib /opt/homebrew/opt/libvpx/lib
+                       /usr/local/lib /usr/local/opt/libvpx/lib
+                 PATHS /opt/homebrew/lib /usr/local/lib)
+    if(NX_VPX_INCLUDE AND NX_VPX_LIBRARY)
+        if(NOT TARGET nx_vpx)
+            add_library(nx_vpx INTERFACE IMPORTED)
+            set_target_properties(nx_vpx PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${NX_VPX_INCLUDE}"
+                                  INTERFACE_LINK_LIBRARIES "${NX_VPX_LIBRARY}")
+        endif()
+        set(VPX_FOUND TRUE)
+        set(NX_VPX_TARGET nx_vpx)
+        message(STATUS "libvpx: ${NX_VPX_LIBRARY} (without pkg-config)")
+    endif()
+endif()
+if(NOT ANDROID AND NOT VORBIS_FOUND)
+    find_path(NX_VORBIS_INCLUDE vorbis/codec.h
+              HINTS $ENV{HOMEBREW_PREFIX}/include /opt/homebrew/include /opt/homebrew/opt/libvorbis/include
+                    /usr/local/include /usr/local/opt/libvorbis/include
+              PATHS /opt/homebrew/include /usr/local/include)
+    find_library(NX_VORBIS_LIBRARY vorbis
+                 HINTS $ENV{HOMEBREW_PREFIX}/lib /opt/homebrew/lib /opt/homebrew/opt/libvorbis/lib
+                       /usr/local/lib /usr/local/opt/libvorbis/lib
+                 PATHS /opt/homebrew/lib /usr/local/lib)
+    find_library(NX_OGG_LIBRARY ogg
+                 HINTS $ENV{HOMEBREW_PREFIX}/lib /opt/homebrew/lib /opt/homebrew/opt/libogg/lib
+                       /usr/local/lib /usr/local/opt/libogg/lib
+                 PATHS /opt/homebrew/lib /usr/local/lib)
+    if(NX_VORBIS_INCLUDE AND NX_VORBIS_LIBRARY AND NX_OGG_LIBRARY)
+        if(NOT TARGET nx_vorbis)
+            add_library(nx_vorbis INTERFACE IMPORTED)
+            set_target_properties(nx_vorbis PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${NX_VORBIS_INCLUDE}"
+                                  INTERFACE_LINK_LIBRARIES "${NX_VORBIS_LIBRARY};${NX_OGG_LIBRARY}")
+        endif()
+        set(VORBIS_FOUND TRUE)
+        set(NX_VORBIS_TARGET nx_vorbis)
+        message(STATUS "libvorbis: ${NX_VORBIS_LIBRARY} (without pkg-config)")
+    endif()
+endif()
 if(VORBIS_FOUND)
-    target_link_libraries(${NX_GAME} PRIVATE PkgConfig::VORBIS)
+    target_link_libraries(${NX_GAME} PRIVATE ${NX_VORBIS_TARGET})
 else()
     message(STATUS "libvorbis not found: movies use the SDK's Vorbis decoder")
     target_compile_definitions(${NX_GAME} PRIVATE NX_NO_VORBIS)
 endif()
 if(VPX_FOUND)
-    target_link_libraries(${NX_GAME} PRIVATE PkgConfig::VPX)
+    target_link_libraries(${NX_GAME} PRIVATE ${NX_VPX_TARGET})
 else()
     message(STATUS "libvpx not found: movies will show black frames")
     target_compile_definitions(${NX_GAME} PRIVATE NX_NO_VPX)

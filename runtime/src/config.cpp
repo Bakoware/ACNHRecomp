@@ -64,8 +64,8 @@ std::string game_language(const std::string& v) {
     if (v == "pt-BR") return "es";
     return v;
 }
-std::string handheld(const std::string& v) { return v == "handheld" ? "1" : ""; }
-std::string fsr(const std::string& v) { return v == "fsr" ? "1" : ""; }
+std::string handheld(const std::string& v) { return v == "handheld" ? "1" : "0"; }
+std::string fsr(const std::string& v) { return v == "fsr" ? "1" : "0"; }
 std::string fps_cap(const std::string& v) { return v == "30" ? "30" : ""; }
 // "60native": the game's logic steps at 60 Hz too (games/acnh/native60.cpp, docs/NATIVE60.md).
 std::string interval(const std::string& v) { return v == "60" || v == "60native" ? "1" : ""; }
@@ -83,6 +83,7 @@ std::string fsr_sharpness(const std::string& v) {
 const Mapping kMappings[] = {
     {"game.language", "NX_LANGUAGE", game_language, true},
     {"video.fullscreen", "NX_FULLSCREEN", on_off, false},
+    {"video.show_fps", "NX_SHOW_FPS", on_off, false},
     {"video.window", "NX_RESOLUTION", auto_empty, true},
     {"video.mode", "NX_HANDHELD", handheld, true},
     {"video.upscaler", "NX_FSR", fsr, true},
@@ -94,6 +95,34 @@ const Mapping kMappings[] = {
     {"video.frame_gen", "NX_FRAMEGEN", framegen, true},
     {"audio.reverb", "NX_AUDIO_REVERB", off_is_zero, false},  // also read live (hle_audio.cpp)
 };
+
+// video.preset: a named group of the settings that cost the most (measured on an M1, intro scene, GPU time per frame:
+// TV mode 1080p 14.9 ms, handheld 720p 9.4 ms, TV mode at 540p 6.8 ms; the audio reverb ~1 CPU core). Choosing one on the
+// settings screen writes its keys; in config.ini a preset fills only the keys the file leaves out, so a hand-set
+// key still wins. "custom" (or none): nothing.
+struct Preset {
+    const char* name;
+    std::vector<std::pair<const char*, const char*>> keys;
+};
+const std::vector<Preset>& presets() {
+    static const std::vector<Preset> p = {
+        {"quality", {{"video.mode", "docked"}, {"video.resolution", "native"}, {"video.upscaler", "linear"},
+                     {"audio.reverb", "1"}}},
+        {"balanced", {{"video.mode", "handheld"}, {"video.resolution", "native"}, {"video.upscaler", "fsr"},
+                      {"audio.reverb", "1"}}},
+        // Weak PCs (dual/quad-core CPUs, Intel UHD/Iris, old APUs, 4-6 GB): TV mode drawn at 540 rows (half of 1080)
+        // and upscaled with FSR 1, no frame generation, the CPU-rendered reverb bypassed. TV mode at 540 measured
+        // cheaper on the GPU than handheld mode at the same 540 rows (6.8 vs 8.2 ms; handheld's 720p native: 9.4 ms).
+        {"low", {{"video.mode", "docked"}, {"video.resolution", "540"}, {"video.upscaler", "fsr"},
+                 {"video.frame_gen", "off"}, {"audio.reverb", "0"}}},
+    };
+    return p;
+}
+const Preset* preset_named(const std::string& name) {
+    for (const Preset& p : presets())
+        if (name == p.name) return &p;
+    return nullptr;
+}
 
 // "auto" (or no setting): the system's locale picks among the game's languages; Portuguese gets the pt-BR fan
 // translation when it is installed (the game itself has no Portuguese), else English.
@@ -154,6 +183,18 @@ void config_load() {
             g_entries.push_back({k, v});
     }
     std::fclose(f);
+    // A preset named in the file supplies the keys the file leaves out (in memory: written back only if changed).
+    if (ConfigEntry* e = find("video.preset"))
+        if (const Preset* p = preset_named(e->value))
+            for (auto& [k, v] : p->keys)
+                if (!find(k)) g_entries.push_back({k, v});
+}
+
+std::vector<std::pair<std::string, std::string>> config_preset(const std::string& name) {
+    std::vector<std::pair<std::string, std::string>> out;
+    if (const Preset* p = preset_named(name))
+        for (auto& [k, v] : p->keys) out.push_back({k, v});
+    return out;
 }
 
 void config_apply() {
@@ -175,7 +216,15 @@ void config_apply() {
         std::string value = std::string(m.key) == "game.language" ? game_lang : e ? e->value : std::string();
         if (value.empty()) continue;
         std::string v = m.map(value);
-        if (!v.empty()) set_env_default(m.env, v);
+        if (std::string(m.env) == "NX_HANDHELD") {
+            if (v == "0") unsetenv("NX_HANDHELD");
+            else if (v == "1") set_env_default("NX_HANDHELD", "1");
+        } else if (std::string(m.env) == "NX_FSR") {
+            if (v == "0") unsetenv("NX_FSR");
+            else if (v == "1") set_env_default("NX_FSR", "1");
+        } else if (!v.empty()) {
+            set_env_default(m.env, v);
+        }
     }
     // The pt-BR translation is a mod: enable it with the language (game.mods can list more, comma separated).
     std::string mods;
@@ -234,6 +283,33 @@ bool config_get_bool(const std::string& key, bool fallback) {
 
 uint64_t config_generation() { return g_generation.load(std::memory_order_acquire); }
 
+bool config_show_fps() {
+    static std::atomic<uint64_t> s_last_gen{0};
+    static std::atomic<bool> s_cached{false};
+    uint64_t gen = config_generation();
+    if (s_last_gen.load(std::memory_order_relaxed) != gen) {
+        bool val = false;
+        std::string v = config_get("video.show_fps");
+        if (!v.empty()) {
+            val = (v == "1" || v == "on" || v == "true" || v == "yes");
+        } else {
+            const char* env = std::getenv("NX_SHOW_FPS");
+            val = env && (std::string(env) == "1" || std::string(env) == "true" || std::string(env) == "on");
+        }
+        s_cached.store(val, std::memory_order_relaxed);
+        s_last_gen.store(gen, std::memory_order_relaxed);
+    }
+    return s_cached.load(std::memory_order_relaxed);
+}
+
+bool config_is_handheld() {
+    if (const char* e = std::getenv("NX_HANDHELD")) {
+        return *e != '\0' && *e != '0' && std::string(e) != "false" && std::string(e) != "off";
+    }
+    std::string m = config_get("video.mode");
+    return m == "handheld";
+}
+
 void config_set(const std::string& key, const std::string& value) {
     g_generation.fetch_add(1, std::memory_order_acq_rel);
     std::lock_guard lk(g_lock);
@@ -251,7 +327,7 @@ std::vector<ConfigEntry> config_all() {
 bool config_needs_restart(const std::string& key) {
     for (const Mapping& m : kMappings)
         if (key == m.key) return m.restart;
-    return key == "game.mods" || key == "controls.glyphs" || key == "input.layout";  // icons: read at boot
+    return key == "game.mods" || key == "controls.glyphs" || key == "input.layout" || key == "video.preset";  // icons: read at boot
 }
 
 }  // namespace nx
