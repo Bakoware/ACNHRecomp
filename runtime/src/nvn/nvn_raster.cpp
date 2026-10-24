@@ -132,13 +132,15 @@ void raster_dynamic(VkCommandBuffer cb, bool slack) {
     // depth differences (r), factor per unit of slope. Ryujinx and yuzu halve the units, but that is of the Maxwell
     // register the driver writes (units * 2); the API value needs no scaling. What does differ: D24 targets are
     // D32 float here (nvn_format.cpp), where r is not 2^-24 but 2^(exponent of the primitive's depth - 23): the
-    // same for depths in 0.5..1, smaller below. NX_DEPTH_BIAS_UNITS=<scale> multiplies the units, to tune that if
-    // decals or shadows show it (yuzu rescales them when it emulates D24 the same way).
+    // same for depths in 0.5..1, smaller below. NX_DEPTH_BIAS_UNITS=<scale> and NX_DEPTH_BIAS_FACTOR=<scale> scale
+    // units and slope factor to prevent shadow acne and z-fighting on Apple Silicon Metal D32F.
     static const char* scale_env = std::getenv("NX_DEPTH_BIAS_UNITS");
-    static const float units_scale = scale_env ? float(std::atof(scale_env)) : 1.0f;
+    static const float units_scale = scale_env ? float(std::atof(scale_env)) : 2.5f;
+    static const char* factor_env = std::getenv("NX_DEPTH_BIAS_FACTOR");
+    static const float factor_scale = factor_env ? float(std::atof(factor_env)) : 2.0f;
     // A non-zero clamp needs the depthBiasClamp feature (MoltenVK has it: Metal's setDepthBias clamp).
     float clamp = vk_features().depthBiasClamp ? s.bias_clamp : 0.0f;
-    float units = s.bias_units * units_scale, factor = s.bias_factor;
+    float units = s.bias_units * units_scale, factor = s.bias_factor * factor_scale;
     if (slack) units -= equal_slack_units(), factor -= equal_slack_units() / 4.0f, clamp = 0.0f;
     p_vkCmdSetDepthBias(cb, units, clamp, factor);
 }

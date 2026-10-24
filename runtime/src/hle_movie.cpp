@@ -54,8 +54,8 @@ constexpr const char* kCtor = "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19Decoder
 constexpr uint32_t kOk = 0, kInvalid = 0x100b, kNoBuffer = 0x1011, kNoOutputBuffer = 0x100e;
 constexpr uint32_t kFlagEos = 4;          // BufferFlag_EndOfStream (what main passes when the extractor runs out)
 // Buffers in flight. The game demuxes in file order and feeds whichever decoder the next sample is for;
-// we use 16 inputs and 64 outputs so video queue depth avoids starving interleaved audio extraction.
-constexpr int kInputs = 16, kOutputs = 64;
+// we use 16 inputs and 16 outputs recycled from a fixed pool to stay strictly within the game's queue capacity (32).
+constexpr int kInputs = 16, kOutputs = 16;
 constexpr uint64_t kInputCapacity = 4ull << 20;
 
 enum Type { kAvc = 1, kVp8 = 2, kVp9 = 3, kAac = 4, kVorbis = 5 };
@@ -77,9 +77,8 @@ struct Decoder {
     // signalling, as DecoderImpl does: the game registers the struct before it fills it.
     uint64_t events = 0;
     uint64_t inputs[kInputs] = {};
-    std::deque<int> free_inputs, held_inputs;  // held: decoded, waiting for an output slot to give them back
+    std::deque<int> free_inputs, free_outputs;
     std::deque<Frame> outputs;
-    int next_out = 0;
     bool started = false, format_sent = false;
     bool eos = false;  // the end-of-stream input came: no more input buffers until Flush/Stop (as MediaCodec)
     uint64_t frames = 0;
@@ -148,9 +147,9 @@ void stats() {
     for (auto& [self, d] : g_decoders) {
         size_t unacquired = std::count_if(d->outputs.begin(), d->outputs.end(), [](const Frame& f) { return !f.acquired; });
         log("movie: %s: %llu sent, %llu decoded, %llu acquired, %llu copied, %llu released; outputs %zu (%zu not acquired), "
-            "inputs %zu free %zu held", d->audio() ? "audio" : "video", (unsigned long long)d->sent,
+            "inputs %zu free, %zu output slots free", d->audio() ? "audio" : "video", (unsigned long long)d->sent,
             (unsigned long long)d->frames, (unsigned long long)d->acquired, (unsigned long long)d->copied,
-            (unsigned long long)d->released, d->outputs.size(), unacquired, d->free_inputs.size(), d->held_inputs.size());
+            (unsigned long long)d->released, d->outputs.size(), unacquired, d->free_inputs.size(), d->free_outputs.size());
     }
 }
 
@@ -186,16 +185,13 @@ void decode(Decoder& d, const uint8_t* data, size_t size, int64_t pts, uint32_t 
         f.pts = frame_pts;
         f.flags = fl;
         int idx = 0;
-        bool in_use = true;
-        while (in_use) {
-            idx = d.next_out++ % 1024;
-            in_use = false;
-            for (const auto& existing : d.outputs) {
-                if (existing.index == idx) {
-                    in_use = true;
-                    break;
-                }
-            }
+        if (!d.free_outputs.empty()) {
+            idx = d.free_outputs.front();
+            d.free_outputs.pop_front();
+        } else if (!d.outputs.empty()) {
+            // Safety fallback if pushed when output pool is exhausted: reuse oldest output slot
+            idx = d.outputs.front().index;
+            d.outputs.pop_front();
         }
         f.index = idx;
         d.outputs.push_back(std::move(f));
@@ -405,6 +401,10 @@ void Start(CPU& c) {
             if (!d->inputs[k]) d->inputs[k] = kernel_alloc(kInputCapacity);
             d->free_inputs.push_back(k);
         }
+        d->free_outputs.clear();
+        for (int k = 0; k < kOutputs; k++) {
+            d->free_outputs.push_back(k);
+        }
     }
     signal(c, *d, 0);
     c.x[0] = kOk;
@@ -417,10 +417,11 @@ void Flush(CPU& c) {  // also Stop and Reset: drop everything in flight, every i
     {
         std::lock_guard lk(d->lock);
         d->outputs.clear();
-        d->held_inputs.clear();
         d->eos = false;
         d->free_inputs.clear();
         for (int k = 0; k < kInputs; k++) d->free_inputs.push_back(k);
+        d->free_outputs.clear();
+        for (int k = 0; k < kOutputs; k++) d->free_outputs.push_back(k);
         started = d->started;
     }
     if (started) signal(c, *d, 0);
@@ -443,7 +444,11 @@ void AcquireInputBufferIndex(CPU& c) {  // Status (int* index, int* remaining)
         std::lock_guard lk(d->lock);
         st<int32_t>(c.x[1], -1);
         st<int32_t>(c.x[2], 0);
-        if (d->free_inputs.empty() || d->eos) return void(c.x[0] = kNoBuffer);
+        // Throttle video inputs when output pool is exhausted to keep video pacing aligned.
+        // Audio decoder is never throttled so interleaved audio demuxing never starves.
+        if (d->free_inputs.empty() || d->eos || (!d->audio() && d->free_outputs.empty())) {
+            return void(c.x[0] = kNoBuffer);
+        }
         st<int32_t>(c.x[1], d->free_inputs.front());
         d->free_inputs.pop_front();
         int32_t remaining = int32_t(d->free_inputs.size());
@@ -479,17 +484,15 @@ void SendInputBufferForDecode(CPU& c) {
         size_t before = d->outputs.size();
         decode(*d, reinterpret_cast<const uint8_t*>(d->inputs[index] + offset), size_t(size), pts, flags);
         if (d->sent++ % 300 == 0)
-            log("movie: input %llu: %d bytes at %lld us, flags %#x; %llu frames decoded, %zu outputs waiting",
-                (unsigned long long)d->sent, size, (long long)pts, flags, (unsigned long long)d->frames, d->outputs.size());
+            log("movie: %s input %llu: %d bytes at %lld us, flags %#x; %llu frames decoded, %zu outputs waiting",
+                d->audio() ? "audio" : "video", (unsigned long long)d->sent, size, (long long)pts, flags,
+                (unsigned long long)d->frames, d->outputs.size());
         output = d->outputs.size() > before;
         if (output && !d->format_sent && (d->width || d->channels)) d->format_sent = format_changed = true;
         if (flags & kFlagEos) d->eos = true;
-        if (d->eos)
-            d->free_inputs.push_back(index);  // kept, not offered (the game's reader has finished; its queue fills)
-        else if (d->audio() || d->outputs.size() < kOutputs)
-            d->free_inputs.push_back(index), input_back = true;
-        else
-            d->held_inputs.push_back(index);
+        // libvpx and libvorbis decode synchronously on CPU; return input buffer immediately so demuxer never starves.
+        d->free_inputs.push_back(index);
+        input_back = !d->eos && (d->audio() || !d->free_outputs.empty());
     }
     if (format_changed) signal(c, *d, 2);
     if (output) signal(c, *d, 1);
@@ -539,8 +542,8 @@ void GetOutputBuffer(CPU& c) {  // Status (int index, Buffer* out): the frame co
         n = cap > 0 ? std::min<size_t>(it->data.size(), cap) : it->data.size();
         if (n && dst) std::memcpy(reinterpret_cast<void*>(dst), it->data.data(), n);
         if (d->copied++ % 300 == 0)
-            log("movie: frame %llu at %lld us -> buffer %llx (capacity %llu, %zu of %zu bytes); %llu sent, %llu decoded, "
-                "%llu acquired, %llu released", (unsigned long long)d->copied, (long long)it->pts,
+            log("movie: %s frame %llu at %lld us -> buffer %llx (capacity %llu, %zu of %zu bytes); %llu sent, %llu decoded, "
+                "%llu acquired, %llu released", d->audio() ? "audio" : "video", (unsigned long long)d->copied, (long long)it->pts,
                 (unsigned long long)dst, (unsigned long long)cap, n, it->data.size(), (unsigned long long)d->sent,
                 (unsigned long long)d->frames, (unsigned long long)d->acquired, (unsigned long long)d->released);
     }
@@ -552,16 +555,17 @@ void GetOutputBuffer(CPU& c) {  // Status (int index, Buffer* out): the frame co
 void ReleaseOutputBufferIndex(CPU& c) {  // Status (int index)
     Decoder* d = of(c.x[0]);
     if (!d) return void(c.x[0] = kInvalid);
+    int index = int(c.x[1]);
     bool input_back = false;
     bool output_avail = false;
     {
         std::lock_guard lk(d->lock);
-        auto it = std::find_if(d->outputs.begin(), d->outputs.end(), [&](const Frame& f) { return f.index == int(c.x[1]); });
-        if (it != d->outputs.end()) d->outputs.erase(it), d->released++;
-        while (!d->held_inputs.empty() && d->outputs.size() < kOutputs) {
-            d->free_inputs.push_back(d->held_inputs.front());
-            d->held_inputs.pop_front();
-            input_back = !d->eos;
+        auto it = std::find_if(d->outputs.begin(), d->outputs.end(), [&](const Frame& f) { return f.index == index; });
+        if (it != d->outputs.end()) {
+            d->outputs.erase(it);
+            d->free_outputs.push_back(index);
+            d->released++;
+            input_back = !d->free_inputs.empty() && !d->eos;
         }
         output_avail = std::any_of(d->outputs.begin(), d->outputs.end(), [](const Frame& f) { return !f.acquired; });
     }
@@ -577,7 +581,7 @@ void GetOutputBufferSize(CPU& c) {  // Status (int* size, int* count)
     int w = d->width > 0 ? d->width : 1920;
     int h = d->height > 0 ? d->height : 1080;
     st<int32_t>(c.x[1], d->audio() ? 0x2000 * std::max(d->channels, 1) : (w * h * 3 / 2));
-    st<int32_t>(c.x[2], 1);
+    st<int32_t>(c.x[2], kOutputs);
     c.x[0] = kOk;
 }
 

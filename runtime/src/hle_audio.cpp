@@ -215,10 +215,12 @@ void AppendAudioOutBuffer(CPU& c) {  // (AudioOut*, AudioOutBuffer*)
 }
 
 void GetReleasedAudioOutBuffer(CPU& c) {
-    std::lock_guard lk(g_out.lock);
+    std::unique_lock lk(g_out.lock);
     g_out_polls++;
     if (g_out.released.empty()) {
         c.x[0] = 0;
+        lk.unlock();
+        std::this_thread::yield();
         return;
     }
     c.x[0] = g_out.released.front();
