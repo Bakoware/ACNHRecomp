@@ -378,6 +378,7 @@ struct PipeTask {
     std::unique_ptr<PipeBuild> build;
     std::atomic<int> state{0};  // 0 queued, 1 running, 2 done
     VkPipeline pipeline = VK_NULL_HANDLE;
+    uint64_t wanted_ns = 0;  // when a draw first asked for it (replay thread only): 0 = only prewarmed so far
     std::mutex m;
     std::condition_variable cv;
     void run() {
@@ -434,11 +435,15 @@ Pool& pool() {
     return *p;
 }
 
-void enqueue(const std::shared_ptr<PipeTask>& t) {
+// front: a pipeline a draw is waiting for goes before the prewarm ones (a task queued twice runs once).
+void enqueue(const std::shared_ptr<PipeTask>& t, bool front = false) {
     Pool& pl = pool();
     {
         std::lock_guard lk(pl.m);
-        pl.q.push_back(t);
+        if (front)
+            pl.q.push_front(t);
+        else
+            pl.q.push_back(t);
     }
     pl.cv.notify_one();
 }
@@ -533,14 +538,14 @@ PKey bytes_of(const PipelineKey& k) {
     return out;
 }
 
-// A draw whose pipeline is not built yet is skipped (the pipeline compiles on a worker thread and the next frames
-// draw it) instead of stalling the replay: on the M1 a Metal pipeline takes ~80 ms, and arriving on the island built
-// 8 in one frame (a 755 ms freeze; 98 ms at worst with this). What is new shows up a few frames late. On by default;
-// NX_ASYNC_PIPELINES=0 (video.async_shaders off) compiles in place.
+// NX_ASYNC_PIPELINES=1 (video.async_shaders, off by default): a draw whose pipeline is not built yet is skipped (the
+// pipeline compiles on a worker thread and the next frames draw it) instead of stalling the replay: arriving on the
+// island went from a 755 ms freeze to 98 ms on the M1. Off by default: a draw the game makes once (a scene's
+// precomputed lighting) stays missing, and the Nook Inc. counter scene drew only its UI over black.
 bool async_skip() {
     static const bool on = [] {
         const char* e = std::getenv("NX_ASYNC_PIPELINES");
-        return !(e && e[0] == '0') && pool().threads > 0;
+        return e && e[0] == '1' && pool().threads > 0;
     }();
     return on;
 }
@@ -555,7 +560,17 @@ VkPipeline pipeline_for(const PipelineKey& canon, const ProgramLayout& layout, b
     if (auto it = g_inflight.find(ck); it != g_inflight.end()) {
         std::shared_ptr<PipeTask> t = it->second;
         if (t->state.load() != 2) {
-            if (async_skip()) return *pending = true, VK_NULL_HANDLE;
+            // Skipped while a worker builds it, but never for long: behind hundreds of prewarmed pipelines a draw's
+            // own waited for seconds and the 3D scene stayed black (only the UI drawn). It is moved to the front of
+            // the queue, and after 150 ms the replay waits for it as without async_skip.
+            if (async_skip()) {
+                const uint64_t now = plat::monotonic_ns();
+                if (!t->wanted_ns) {
+                    t->wanted_ns = now;
+                    if (t->state.load() == 0) enqueue(t, true);
+                }
+                if (now - t->wanted_ns < 150'000'000ull) return *pending = true, VK_NULL_HANDLE;
+            }
             const uint64_t t0 = plat::monotonic_ns();
             t->wait();
             note_pipeline_waited(plat::monotonic_ns() - t0);
@@ -569,8 +584,9 @@ VkPipeline pipeline_for(const PipelineKey& canon, const ProgramLayout& layout, b
     if (async_skip()) {
         auto t = std::make_shared<PipeTask>();
         t->build = std::move(build);
+        t->wanted_ns = plat::monotonic_ns();
         g_inflight.emplace(ck, t);
-        enqueue(t);
+        enqueue(t, true);
         return *pending = true, VK_NULL_HANDLE;
     }
     VkPipeline p = compile(*build);

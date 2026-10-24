@@ -374,7 +374,7 @@ void page_video() {
               {{"auto", tr("common.auto")}, {"discrete", tr("video.gpu.discrete")}, {"integrated", tr("video.gpu.integrated")}}, w);
     });
     row("video.shaders", "video.shaders.desc", [&](float w) { toggle("video.shader_prepare", true, w); });
-    row("video.async_shaders", "video.async_shaders.desc", [&](float w) { toggle("video.async_shaders", true, w); });
+    row("video.async_shaders", "video.async_shaders.desc", [&](float w) { toggle("video.async_shaders", false, w); });
 }
 
 void page_audio() {
