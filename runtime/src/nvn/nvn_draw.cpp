@@ -358,6 +358,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     GpuImage* wi = nullptr;
     for (uint32_t i = 0; i < t.color_count; i++) {
         if (t.colors[i]) {
+            if (Texture* tex = get<Texture>(t.colors[i]); tex && tex->base_w && !tex->uw) {
+                tex->uw = true;
+                uw_resize(*tex);
+                if (tex->image) retire_image(std::move(tex->image)), tex->image.reset();
+            }
             if (auto* img = image_of(t.colors[i]); img && img->uw && (img->sx != 1.0f || img->sy != 1.0f)) {
                 wi = img;
                 break;

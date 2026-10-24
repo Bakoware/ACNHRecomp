@@ -257,28 +257,16 @@ void draw_fps_overlay(float scale) {
     }
 
     ImGuiIO& io = ImGui::GetIO();
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.1f FPS", s_fps);
+    const ImVec2 ts = ImGui::CalcTextSize(buf);
+    const ImVec2 pad(10.0f * scale, 5.0f * scale);
     const float margin = 12.0f * scale;
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - margin, margin), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-    ImGui::SetNextWindowBgAlpha(0.5f);
-
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f * scale);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f * scale, 4.0f * scale));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                             ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs;
-
-    if (ImGui::Begin("##FPSOverlay", nullptr, flags)) {
-        ImGui::Text("%.1f FPS", s_fps);
-    }
-    ImGui::End();
-
-    ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(3);
+    const ImVec2 p1(io.DisplaySize.x - margin, margin + ts.y + pad.y * 2.0f);
+    const ImVec2 p0(p1.x - ts.x - pad.x * 2.0f, margin);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    dl->AddRectFilled(p0, p1, IM_COL32(20, 18, 15, 190), 8.0f * scale);
+    dl->AddText(ImVec2(p0.x + pad.x, p0.y + pad.y), IM_COL32(255, 252, 240, 245), buf);
 }
 
 }  // namespace

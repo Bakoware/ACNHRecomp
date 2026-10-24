@@ -445,6 +445,12 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
     float vw = g_state.has_viewport ? float(g_state.viewport[2]) : 1280.0f;
     float vh = g_state.has_viewport ? float(g_state.viewport[3]) : 720.0f;
     RenderScales scales;
+    if (g_uw.on && g_state.has_viewport) {  // screen scale: the viewport the shaders see is the scaled one
+        int32_t x = g_state.viewport[0], w = g_state.viewport[2], y = g_state.viewport[1], h = g_state.viewport[3];
+        uw_span(x, w, UINT32_MAX, g_uw.sx);
+        uw_span(y, h, UINT32_MAX, g_uw.sy);
+        vw = float(w), vh = float(h);
+    }
     if (uw_scaling()) {
         if (g_uw.on) scales.rt = g_uw.s();
         const ShaderInfo* fs = nullptr;

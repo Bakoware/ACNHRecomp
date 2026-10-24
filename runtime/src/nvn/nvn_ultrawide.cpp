@@ -189,21 +189,9 @@ void uw_apply() {
 }
 
 bool uw_widen_texture(Texture& t) {
-    // Video planes (NV12: R8 fmt 0x1, RG8 fmt 0xd) and non-renderable textures must never be widened.
-    if (t.format == 0x01 || t.format == 0x0d) return false;
-
     // Render targets (flags 8), the window textures (display, 1) and the scene colour (flags 0); not packaged assets (4).
     static const bool off = std::getenv("NX_SCREEN_SCALE") && std::getenv("NX_SCREEN_SCALE")[0] == '0';
     if (off || t.target != 1 || (t.flags & 4) || t.width < 16 || t.height < 9) return false;
-
-    // Screen color targets in ACNH are only RGBA8 (0x25), RGBA16F (0x29), R11G11B10F (0x3f),
-    // sRGB RGBA8 (0x37, 0x38), A2B10G10R10 (0x3d), R32F (0x0a), and depth/stencil (0x31..0x36), or textures with render target flags (flags & 8).
-    const bool is_screen_fmt = (t.format == 0x25 || t.format == 0x29 || t.format == 0x3f ||
-                                t.format == 0x37 || t.format == 0x38 || t.format == 0x3d ||
-                                t.format == 0x0a || (t.format >= 0x31 && t.format <= 0x36));
-    const bool has_rt_flag = (t.flags & 8) != 0;
-    if (!is_screen_fmt && !has_rt_flag) return false;
-
     double r = double(t.width) / double(t.height);
     if (std::fabs(r - k169) / k169 > 0.03) return false;
     // The 1920x1080 and 1280x720 chains (halved down to the bloom's 30x17, heights padded: 480x272), not a UI layer
