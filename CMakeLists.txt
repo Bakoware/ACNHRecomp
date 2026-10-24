@@ -60,6 +60,30 @@ if(NX_TESTS AND NOT ANDROID)
     endif()
 endif()
 
+# Native Metal backend (docs/NATIVE_METAL.md), Apple only: SPIRV-Cross (Apache-2.0) turns the shaders into MSL.
+# Fetched at a fixed revision on the first configure. metal_shader_check runs every shader of a game through it
+# (cmake --build <dir> --target metal_shader_check; metal_shader_check private/acnh).
+if(APPLE)
+    include(FetchContent)
+    set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(spirv_cross GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
+                         GIT_TAG vulkan-sdk-1.4.309.0 GIT_SHALLOW TRUE EXCLUDE_FROM_ALL)
+    FetchContent_MakeAvailable(spirv_cross)
+    add_library(nx_mtl STATIC runtime/src/mtl/mtl_shaders.cpp)
+    target_include_directories(nx_mtl PUBLIC runtime/src)
+    target_link_libraries(nx_mtl PUBLIC spirv-cross-msl)
+    enable_language(OBJCXX)
+    add_executable(metal_shader_check EXCLUDE_FROM_ALL tests/metal_shader_check.mm)
+    target_link_libraries(metal_shader_check PRIVATE nx_mtl "-framework Metal" "-framework Foundation")
+    set_target_properties(metal_shader_check PROPERTIES OBJCXX_STANDARD 20)
+endif()
+
 # Dear ImGui: the settings screen and the launcher. tools/setup_acnh.sh downloads it into private/third_party/imgui.
 set(NX_IMGUI_DIR "${CMAKE_SOURCE_DIR}/private/third_party/imgui" CACHE PATH "Dear ImGui sources")
 

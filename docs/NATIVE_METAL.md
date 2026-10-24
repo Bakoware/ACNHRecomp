@@ -24,7 +24,9 @@ textures by handle in pools (bindless); Vulkan forces descriptor sets per draw, 
 
 Built beside the Vulkan backend (`NX_GPU_BACKEND=metal`), switched on by default on macOS once it matches it.
 
-1. **Shaders** (feasibility checked): all SPIR-V the setup produces → MSL with SPIRV-Cross; compiled by
+1. **Shaders** ✅ (2026-10-24, `runtime/src/mtl/mtl_shaders.cpp`, `metal_shader_check`: ACNH's 9,452 shaders →
+   9,448 converted and compiled by the system's Metal compiler on the M1 in 378 s; the 4 others are geometry
+   shaders, which Metal has no stage for, as MoltenVK does not either). Details: all SPIR-V the setup produces → MSL with SPIRV-Cross; compiled by
    `MTLDevice newLibraryWithSource` on first use, cached in a binary archive. Sample of 400: 400 converted, 400
    compiled (38 ms each on the M1; the 9,454 in ~6 min, once). Left: the per-pipeline SPIR-V patches
    (`nvn_spirv_patch.cpp`: NoContraction, clip distances, R11G11B10, ...) applied before the conversion, and the
