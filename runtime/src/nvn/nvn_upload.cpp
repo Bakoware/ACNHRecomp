@@ -271,6 +271,16 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         decode_astc(t.format, linear, levels, layers, bw, bh);
         bw = bh = 1, bytes = host_bytes = 4;
     }
+    if (img.alpha_from_r && bytes == 1) {  // block-linear R8 -> RGBA8 (255, 255, 255, R), as pitch-linear above
+        // Copied as it was, the guard saw a quarter of the bytes and cleared the image: the bitmap fonts'
+        // sheets (BmpFont: an item stack's count, SystemBOutline) were blank.
+        std::vector<uint8_t> wide(linear.size() * 4);
+        uint32_t* d = reinterpret_cast<uint32_t*>(wide.data());
+        for (size_t k = 0; k < linear.size(); k++) d[k] = 0x00FFFFFFu | (uint32_t(linear[k]) << 24);
+        linear.swap(wide);
+        for (auto& l : levels) l.offset *= 4;
+        bytes = host_bytes = 4;
+    }
     // Widened, every offset in the linear buffer doubles (level offsets are multiples of the 4-byte texel).
     uint64_t scale = widen ? 2 : 1;
     Upload u = texture_stage(linear.size() * scale);
