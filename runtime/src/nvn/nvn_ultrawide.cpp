@@ -190,8 +190,10 @@ void uw_apply() {
 
 bool uw_widen_texture(Texture& t) {
     // Render targets (flags 8), the window textures (display, 1) and the scene colour (flags 0); not packaged assets (4).
+    // 2D arrays too (target 4): the island's 960x540x2 target (fmt 0x11) left at 16:9 smeared the right of a wider
+    // screen outdoors.
     static const bool off = std::getenv("NX_SCREEN_SCALE") && std::getenv("NX_SCREEN_SCALE")[0] == '0';
-    if (off || t.target != 1 || (t.flags & 4) || t.width < 16 || t.height < 9) return false;
+    if (off || (t.target != 1 && t.target != 4) || (t.flags & 4) || t.width < 16 || t.height < 9) return false;
     double r = double(t.width) / double(t.height);
     if (std::fabs(r - k169) / k169 > 0.03) return false;
     // The 1920x1080 and 1280x720 chains (halved down to the bloom's 30x17, heights padded: 480x272), not a UI layer
@@ -424,8 +426,10 @@ void rewrite_ortho(uint64_t object, Ortho& o, float k, bool dirty) {
     }
 }
 
+// Off unless NX_UW_ORTHO=1: widening the 2D projections left ghosts of the 3D scene in the Nook Inc. scenes at 21:9;
+// the UI squeeze (nvn_draw.cpp) lays them out right.
 bool ortho_off() {
-    static const bool off = std::getenv("NX_UW_ORTHO") && std::getenv("NX_UW_ORTHO")[0] == '0';
+    static const bool off = !(std::getenv("NX_UW_ORTHO") && std::getenv("NX_UW_ORTHO")[0] == '1');
     return off;
 }
 
