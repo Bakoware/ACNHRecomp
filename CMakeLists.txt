@@ -106,6 +106,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/main.cpp
     runtime/src/sampler.cpp
     runtime/src/loader.cpp
+    runtime/src/bug_report.cpp
     runtime/src/memory.cpp
     runtime/src/kernel.cpp
     runtime/src/kernel_watch.cpp

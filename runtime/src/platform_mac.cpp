@@ -49,6 +49,7 @@
 #include "kernel.h"
 #include "config.h"
 #include "ui/ui.h"
+#include "bug_report.h"
 #include "platform.h"
 
 namespace nx {
@@ -659,6 +660,7 @@ void game_thread() {
 
 int main() {
     nx::config_apply();  // config.ini -> NX_* defaults, before anything reads them (config.h)
+    if (nx::report_mode()) return 0;
     struct sigaction sa{};
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;

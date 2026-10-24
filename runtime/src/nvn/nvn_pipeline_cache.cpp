@@ -78,10 +78,17 @@ void pipeline_cache_save() {
     }
 }
 
+// What the replay built or waited for since the last present, for the hitch lines (present_hitch_check).
+struct FrameCost {
+    std::atomic<uint64_t> pipelines{0}, pipeline_ns{0}, modules{0}, module_ns{0}, waited{0}, waited_ns{0};
+};
+FrameCost g_frame_cost;
+
 void note_pipeline_created(uint64_t ns, bool worker) {
     (worker ? g_worker_pipelines : g_pipelines)++, (worker ? g_worker_ns : g_pipeline_ns) += ns;
+    if (!worker) g_frame_cost.pipelines++, g_frame_cost.pipeline_ns += ns;
 }
-void note_pipeline_waited(uint64_t ns) { g_waited++, g_waited_ns += ns; }
+void note_pipeline_waited(uint64_t ns) { g_waited++, g_waited_ns += ns, g_frame_cost.waited++, g_frame_cost.waited_ns += ns; }
 void note_pipeline_skipped() { g_skipped++; }
 void note_pipeline_prewarmed() { g_prewarmed++; }
 
@@ -141,7 +148,33 @@ static void warm_save() {
     }
 }
 void note_pipeline_alias() { g_alias++; }
-void note_module_created(uint64_t ns) { g_modules++, g_module_ns += ns; }
+void note_module_created(uint64_t ns) {
+    g_modules++, g_module_ns += ns;
+    g_frame_cost.modules++, g_frame_cost.module_ns += ns;
+}
+
+// Every present: a frame shown 50 ms or more after the previous one (a visible stutter at 30 fps) is logged with what
+// the replay spent on shaders in between, so a stutter report says whether it was a shader build or something else.
+// NX_HITCH_MS=<ms> sets the threshold; 300 lines at most per run.
+void present_hitch_check(uint64_t replay_ns, uint64_t upload_bytes) {
+    static const double limit = std::getenv("NX_HITCH_MS") ? std::atof(std::getenv("NX_HITCH_MS")) : 50.0;
+    static uint64_t last = 0, presents = 0;
+    static int lines = 0;
+    uint64_t now = plat::monotonic_ns();
+    double ms = last ? double(now - last) / 1e6 : 0.0;
+    last = now, presents++;
+    FrameCost& f = g_frame_cost;
+    if (ms >= limit && lines < 300) {
+        lines++;
+        log("hitch: present %llu, %.1f ms after the previous; replay and submit %.1f ms, upload %.1f MB; built %llu "
+            "pipelines (%.1f ms), %llu shader modules (%.1f ms); waited for %llu compiles in flight (%.1f ms)",
+            (unsigned long long)presents, ms, double(replay_ns) / 1e6, double(upload_bytes) / 1e6,
+            (unsigned long long)f.pipelines.load(), double(f.pipeline_ns.load()) / 1e6,
+            (unsigned long long)f.modules.load(), double(f.module_ns.load()) / 1e6, (unsigned long long)f.waited.load(),
+            double(f.waited_ns.load()) / 1e6);
+    }
+    f.pipelines = 0, f.pipeline_ns = 0, f.modules = 0, f.module_ns = 0, f.waited = 0, f.waited_ns = 0;
+}
 void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns; }
 
 // One line per timing window (nvn_vk.cpp log_timing): what the replay created, and the time it took.

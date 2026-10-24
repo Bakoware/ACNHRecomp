@@ -820,6 +820,12 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     plat::perf_hint_thread();  // the thread that presents takes part in the frame (perf_hint.cpp)
     std::unique_lock lk(g_gpu);
     g_replay_presents++;
+    {  // this frame's replay work and uploads, from the window's running sums (log_timing clears them)
+        static uint64_t work0 = 0, up0 = 0;
+        uint64_t work = g_timing.replay_ns + g_timing.encode_ns + g_timing.fence_ns, up = g_timing.upload_bytes;
+        present_hitch_check(work >= work0 ? work - work0 : work, up >= up0 ? up - up0 : up);
+        work0 = work, up0 = up;
+    }
     PresentTimer timer;
     drain_objects();  // under the GPU lock, as in gpu_submit
     if (!init()) return;

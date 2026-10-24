@@ -179,6 +179,15 @@ const Entry kEn[] = {
      "A native PC port made by static recompilation. It runs your own copy of the game: no game files are included."},
     {"about.credits", "Built on SuperMarioWonderRecomp, the Ryujinx shader translator and Dear ImGui."},
     {"about.license", "Open source under the MIT license."},
+    {"report.title", "Report a problem"},
+    {"report.prev_failed", "The last session ended with a crash or a freeze."},
+    {"report.desc", "Saves this session's log and the previous one (where a crash shows up), your settings and the computer's model, as a .zip on the desktop. It holds no game data. Attach it to a GitHub issue."},
+    {"report.make", "Create problem report"},
+    {"report.working", "Creating the report..."},
+    {"report.done", "Report saved: {}"},
+    {"report.failed", "Could not create the report: {}"},
+    {"report.show", "Show in folder"},
+    {"report.github", "Open GitHub issues"},
 };
 
 const Entry kPtBr[] = {
@@ -332,6 +341,15 @@ const Entry kPtBr[] = {
      "arquivo do jogo está incluído."},
     {"about.credits", "Baseado no SuperMarioWonderRecomp, no tradutor de shaders do Ryujinx e no Dear ImGui."},
     {"about.license", "Código aberto sob a licença MIT."},
+    {"report.title", "Relatar um problema"},
+    {"report.prev_failed", "A última sessão terminou com um crash ou travamento."},
+    {"report.desc", "Salva o log desta sessão e o da anterior (onde aparece um crash), suas configurações e o modelo do computador num .zip na Área de Trabalho. Não contém dados do jogo. Anexe-o a uma issue no GitHub."},
+    {"report.make", "Criar relatório de problema"},
+    {"report.working", "Criando o relatório..."},
+    {"report.done", "Relatório salvo: {}"},
+    {"report.failed", "Não foi possível criar o relatório: {}"},
+    {"report.show", "Mostrar na pasta"},
+    {"report.github", "Abrir issues no GitHub"},
 };
 
 const Entry kEs[] = {
@@ -488,6 +506,15 @@ const Entry kEs[] = {
      "incluye ningún archivo del juego."},
     {"about.credits", "Basado en SuperMarioWonderRecomp, el traductor de shaders de Ryujinx y Dear ImGui."},
     {"about.license", "Código abierto con licencia MIT."},
+    {"report.title", "Informar de un problema"},
+    {"report.prev_failed", "La última sesión terminó con un cierre inesperado o un bloqueo."},
+    {"report.desc", "Guarda el registro de esta sesión y el de la anterior (donde aparece un cierre), tus ajustes y el modelo del ordenador en un .zip en el escritorio. No contiene datos del juego. Adjúntalo a una issue en GitHub."},
+    {"report.make", "Crear informe de problema"},
+    {"report.working", "Creando el informe..."},
+    {"report.done", "Informe guardado: {}"},
+    {"report.failed", "No se pudo crear el informe: {}"},
+    {"report.show", "Mostrar en la carpeta"},
+    {"report.github", "Abrir issues en GitHub"},
 };
 
 const Entry kFr[] = {

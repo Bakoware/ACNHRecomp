@@ -9,12 +9,15 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -22,6 +25,7 @@
 
 #include <nx/runtime.h>
 
+#include "bug_report.h"
 #include "config.h"
 #include "platform.h"
 #include "saves.h"
@@ -571,6 +575,49 @@ void page_saves() {
     }
 }
 
+// A problem report (bug_report.h), written on a thread: zipping a long log takes a moment.
+std::atomic<int> g_report{0};  // 0 none, 1 writing, 2 written, 3 failed
+std::mutex g_report_lock;
+std::string g_report_path;  // the .zip (or folder) written, or the error
+
+void report_section() {
+    static const bool failed_before = previous_session_failed();
+    ImGui::Dummy(ImVec2(0, 10 * g_scale));
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, 4 * g_scale));
+    ImGui::TextColored(ImVec4(0.42f, 0.31f, 0.21f, 1), "%s", tr("report.title"));
+    if (failed_before) ImGui::TextColored(ImVec4(0.80f, 0.33f, 0.30f, 1), "%s", tr("report.prev_failed"));
+    ImGui::TextWrapped("%s", tr("report.desc"));
+    int state = g_report.load();
+    if (state == 1) {
+        ImGui::TextUnformatted(tr("report.working"));
+        return;
+    }
+    if (button(tr("report.make"))) {
+        g_report = 1;
+        std::thread([] {
+            std::string error, path = write_bug_report(error);
+            std::lock_guard lk(g_report_lock);
+            g_report_path = path.empty() ? error : path;
+            g_report = path.empty() ? 3 : 2;
+        }).detach();
+    }
+    std::string path;
+    {
+        std::lock_guard lk(g_report_lock);
+        path = g_report_path;
+    }
+    if (state == 3) ImGui::TextColored(ImVec4(0.80f, 0.33f, 0.30f, 1), "%s", trf("report.failed", path).c_str());
+    if (state != 2) return;
+    ImGui::TextWrapped("%s", trf("report.done", path).c_str());
+    if (button(tr("report.show"))) {
+        auto dir = fs::u8path(path).parent_path().u8string();
+        plat::open_path(std::string(dir.begin(), dir.end()));
+    }
+    ImGui::SameLine();
+    if (button(tr("report.github"))) SDL_OpenURL("https://github.com/Nycolazs/ACNHRecomp/issues/new");
+}
+
 void page_about() {
     ImGui::TextWrapped("%s", trf("about.version", NX_VERSION_STRING).c_str());
     ImGui::Dummy(ImVec2(0, 6 * g_scale));
@@ -578,6 +625,7 @@ void page_about() {
     ImGui::Dummy(ImVec2(0, 6 * g_scale));
     ImGui::TextWrapped("%s", tr("about.credits"));
     ImGui::TextWrapped("%s", tr("about.license"));
+    report_section();
 }
 
 bool g_quit_confirm = false;

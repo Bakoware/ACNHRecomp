@@ -22,6 +22,7 @@
 
 #include "kernel.h"
 #include "config.h"
+#include "bug_report.h"
 #include "platform.h"
 
 namespace nx {
@@ -484,6 +485,7 @@ LONG WINAPI throw_tracer(EXCEPTION_POINTERS* e) {
 
 int main() {
     nx::config_apply();  // config.ini -> NX_* defaults, before anything reads them (config.h)
+    if (nx::report_mode()) return 0;
     nx::plat::start_memory_guard();  // before anything can grow: a leak must never freeze the machine (memguard_win.cpp)
     SetUnhandledExceptionFilter(crash_handler);
     if (const char* t = std::getenv("NX_THROW_TRACE"); t && *t == '1') AddVectoredExceptionHandler(1, throw_tracer);

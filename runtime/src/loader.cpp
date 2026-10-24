@@ -48,6 +48,13 @@ thread_local const char* t_missing_name = nullptr;
 
 // ---- logging --------------------------------------------------------------------------------------------------
 
+std::string g_log_path;  // set with the file, under g_log_lock
+
+std::string log_file_path() {
+    std::lock_guard lk(g_log_lock);
+    return g_log_path;
+}
+
 void log(const char* fmt, ...) {
     char buf[2048];
     va_list ap;
@@ -63,6 +70,7 @@ void log(const char* fmt, ...) {
         std::string def = plat::data_root() + "/../nx.log";
 #endif
         std::string file = path ? path : def;
+        g_log_path = file;
         // Keep the previous session's log (a problem report should survive reopening the game).
         std::remove((file + ".prev").c_str());
         std::rename(file.c_str(), (file + ".prev").c_str());

@@ -45,6 +45,7 @@
 #include "kernel.h"
 #include "config.h"
 #include "ui/ui.h"
+#include "bug_report.h"
 #include "platform.h"
 
 namespace nx {
@@ -654,6 +655,7 @@ void game_thread() {
 int main() {
     nx::plat::g_main_thread = pthread_self();
     nx::config_apply();  // config.ini -> NX_* defaults, before anything reads them (config.h)
+    if (nx::report_mode()) return 0;
 
     // The crash handler runs on its own stack: a guest stack overflow would leave it none.
     static std::vector<uint8_t> alt(1 << 20);

@@ -104,6 +104,7 @@ void note_pipeline_skipped();             // a draw skipped because its pipeline
 void note_pipeline_prewarmed();           // a pipeline of an earlier session sent to a worker
 void note_astc_decoded(uint64_t ns);
 void creation_log(uint64_t frames);
+void present_hitch_check(uint64_t replay_ns, uint64_t upload_bytes);  // a frame 50 ms after the previous: logged
 Upload upload(const void* data, uint64_t size, uint64_t align);
 
 // Descriptor sets for this submit (freed when it completes).
