@@ -31,6 +31,16 @@ if command -v ninja >/dev/null && [ -f "$BUILD/build.ninja" ]; then
   trap - EXIT
 fi
 
+# The pt-BR fan translation, when its zip is in Downloads and not installed yet (Settings > Game > language
+# Português (Brasil) then uses it). It stays on this computer: private/ is never published.
+if [ ! -d private/acnh/mods/ptbr/romfs ]; then
+  ptbr=$(ls -t "$HOME"/Downloads/acnh_ptbr*.zip 2>/dev/null | head -1)
+  if [ -n "$ptbr" ] && mkdir -p private/acnh/mods/ptbr &&
+     unzip -qo "$ptbr" 'romfs/*' -d private/acnh/mods/ptbr 2>/dev/null; then
+    echo "pt-BR translation installed ($ptbr)"
+  fi
+fi
+
 echo "Starting Animal Crossing: New Horizons..."
 tools/acnh_mac.sh
 status=$?
