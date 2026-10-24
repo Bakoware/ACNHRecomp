@@ -59,6 +59,11 @@ float equal_slack_units() {
     static const float units = env ? float(std::atof(env)) : 4.0f;
     return units;
 }
+float equal_slack_factor() {
+    static const char* env = std::getenv("NX_EQUAL_SLACK_FACTOR");
+    static const float factor = env ? float(std::atof(env)) : 0.0f;
+    return factor;
+}
 }  // namespace
 
 // The colour pass after a pre-pass tests EQUAL (taken as LESS_OR_EQUAL, nvn_pipeline.cpp) against depth another
@@ -141,7 +146,14 @@ void raster_dynamic(VkCommandBuffer cb, bool slack) {
     // A non-zero clamp needs the depthBiasClamp feature (MoltenVK has it: Metal's setDepthBias clamp).
     float clamp = vk_features().depthBiasClamp ? s.bias_clamp : 0.0f;
     float units = s.bias_units * units_scale, factor = s.bias_factor * factor_scale;
-    if (slack) units -= equal_slack_units(), factor -= equal_slack_units() / 4.0f, clamp = 0.0f;
+    // When slack is enabled for the EQUAL (taken as LESS_OR_EQUAL) color pass, we apply a tiny constant bias
+    // (units -= equal_slack_units(), default 4.0 units = 4 ULPs) toward the camera to cover minor floating-point
+    // rounding discrepancies between VS_depth and VS_color.
+    // Crucially, factor (slope-dependent bias) must NOT be biased by default (equal_slack_factor() = 0.0f):
+    // any negative slope factor (-1.0f) offsets sloped geometry by 1 full pixel of depth slope, which allows
+    // underlying or intersecting geometry (white pants waistband under shirt, hair scalp under forehead, brochure
+    // stand pockets, trunk seams) to pass the depth test and punch through as dashed/zipper diagonal lines.
+    if (slack) units -= equal_slack_units(), factor -= equal_slack_factor(), clamp = 0.0f;
     p_vkCmdSetDepthBias(cb, units, clamp, factor);
 }
 

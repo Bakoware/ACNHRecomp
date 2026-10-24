@@ -219,7 +219,7 @@ void decode(Decoder& d, const uint8_t* data, size_t size, int64_t pts, uint32_t 
                 if (!out.empty()) push(std::move(out), pts, 0), d.frames++;
             }
         }
-        if (flags & kFlagEos) push({}, pts, kFlagEos);
+        if ((flags & kFlagEos) && (d.decoded.empty() || !(d.decoded.back().flags & kFlagEos))) push({}, pts, kFlagEos);
         return;
     }
 #endif
@@ -256,7 +256,7 @@ void decode(Decoder& d, const uint8_t* data, size_t size, int64_t pts, uint32_t 
         d.frames++;
     }
     (void)data;
-    if (flags & kFlagEos) {
+    if ((flags & kFlagEos) && (d.decoded.empty() || !(d.decoded.back().flags & kFlagEos))) {
         push({}, pts, kFlagEos);
         log("movie: end of stream after %llu frames", (unsigned long long)d.frames);
     }
@@ -400,6 +400,7 @@ void Start(CPU& c) {
         d->play_start_ns = 0;
         d->last_copy_ns = 0;
         d->first_pts = 0;
+        d->sent = d->frames = d->acquired = d->copied = d->released = 0;
         d->free_inputs.clear();
         for (int k = 0; k < kInputs; k++) {
             if (!d->inputs[k]) d->inputs[k] = kernel_alloc(kInputCapacity);
@@ -414,10 +415,9 @@ void Start(CPU& c) {
     c.x[0] = kOk;
 }
 
-void Flush(CPU& c) {  // also Stop and Reset: drop everything in flight, every input buffer free again
+void Flush(CPU& c) {  // also Stop and Reset: drop everything in flight
     Decoder* d = of(c.x[0]);
     if (!d) return void(c.x[0] = kInvalid);
-    bool started;
     {
         std::lock_guard lk(d->lock);
         d->decoded.clear();
@@ -426,15 +426,14 @@ void Flush(CPU& c) {  // also Stop and Reset: drop everything in flight, every i
         d->play_start_ns = 0;
         d->last_copy_ns = 0;
         d->first_pts = 0;
+        d->sent = d->frames = d->acquired = d->copied = d->released = 0;
         d->eos = false;
         d->eos_sent = false;
         d->free_inputs.clear();
         for (int k = 0; k < kInputs; k++) d->free_inputs.push_back(k);
         d->free_outputs.clear();
         for (int k = 0; k < d->max_outputs(); k++) d->free_outputs.push_back(k);
-        started = d->started;
     }
-    if (started) signal(c, *d, 0);
     c.x[0] = kOk;
 }
 
@@ -449,21 +448,18 @@ void Stop(CPU& c) {
 void AcquireInputBufferIndex(CPU& c) {  // Status (int* index, int* remaining)
     Decoder* d = of(c.x[0]);
     if (!d || !c.x[1] || !c.x[2]) return void(c.x[0] = kInvalid);
-    bool more_inputs = false;
     {
         std::lock_guard lk(d->lock);
         st<int32_t>(c.x[1], -1);
         st<int32_t>(c.x[2], 0);
-        if (d->free_inputs.empty() || d->eos) {
+        if (!d->started || d->free_inputs.empty() || d->eos) {
             return void(c.x[0] = kNoBuffer);
         }
         st<int32_t>(c.x[1], d->free_inputs.front());
         d->free_inputs.pop_front();
         int32_t remaining = int32_t(d->free_inputs.size());
         st<int32_t>(c.x[2], remaining);
-        more_inputs = remaining > 0 && !d->eos;
     }
-    if (more_inputs) signal(c, *d, 0);
     c.x[0] = kOk;
 }
 
@@ -486,22 +482,26 @@ void SendInputBufferForDecode(CPU& c) {
     uint32_t flags = uint32_t(c.x[5]);
     if (!d || index < 0 || index >= kInputs || offset < 0 || size < 0 || uint64_t(offset) + size > kInputCapacity)
         return void(c.x[0] = kInvalid);
-    // Gentle real-time backpressure on the demuxer thread while video is actively rendering:
-    // keeps decoded queue around ~12 frames during playback, but never blocks if Skip is pressed.
-    if (!d->audio()) {
-        for (int wait = 0; wait < 16; wait++) {
-            {
-                std::lock_guard lk(d->lock);
+    // Gentle real-time backpressure on the demuxer thread while video/audio is actively playing:
+    // keeps decoded queue bounded during playback, but never blocks if Skip is pressed.
+    for (int wait = 0; wait < 16; wait++) {
+        {
+            std::lock_guard lk(d->lock);
+            if (!d->started || d->eos) break;
+            if (d->audio()) {
+                if (d->released == 0 || d->decoded.size() < 24) break;
+            } else {
                 uint64_t now = plat_now_ns();
                 bool rendering_active = d->play_start_ns != 0 && (now - d->last_copy_ns) < 60'000'000ull;
-                if (!d->started || d->eos || !rendering_active || d->decoded.size() < 12) break;
+                if (!rendering_active || d->decoded.size() < 12) break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     bool format_changed = false, input_back = false, output = false;
     {
         std::lock_guard lk(d->lock);
+        if (!d->started) return void(c.x[0] = kOk);
         size_t before = d->decoded.size();
         decode(*d, reinterpret_cast<const uint8_t*>(d->inputs[index] + offset), size_t(size), pts, flags);
         if (d->sent++ % 300 == 0)
@@ -512,7 +512,7 @@ void SendInputBufferForDecode(CPU& c) {
         if (d->decoded.size() > before && !d->format_sent && (d->width || d->channels)) d->format_sent = format_changed = true;
         if (flags & kFlagEos) d->eos = true;
         d->free_inputs.push_back(index);
-        input_back = !d->eos;
+        input_back = d->started && !d->eos;
     }
     if (format_changed) signal(c, *d, 2);
     if (output) signal(c, *d, 1);
@@ -524,14 +524,13 @@ void SendInputBufferForDecode(CPU& c) {
 void AcquireOutputBufferIndex(CPU& c) {
     Decoder* d = of(c.x[0]);
     if (!d || !c.x[1] || !c.x[2] || !c.x[3] || !c.x[4]) return void(c.x[0] = kInvalid);
-    bool more_outputs = false;
     {
         std::lock_guard lk(d->lock);
         st<int32_t>(c.x[1], -1);
         st<int64_t>(c.x[2], 0);
         st<uint32_t>(c.x[3], 0);
         st<int32_t>(c.x[4], 0);
-        if (d->free_outputs.empty() || d->eos_sent) return void(c.x[0] = kNoOutputBuffer);
+        if (!d->started || d->free_outputs.empty() || d->eos_sent) return void(c.x[0] = kNoOutputBuffer);
 
         if (d->audio()) {
             if (d->decoded.empty()) return void(c.x[0] = kNoOutputBuffer);
@@ -569,7 +568,6 @@ void AcquireOutputBufferIndex(CPU& c) {
             st<uint32_t>(c.x[3], f.flags);
             st<int32_t>(c.x[4], remaining);
             d->active_outputs[idx] = std::move(f);
-            more_outputs = remaining > 0;
         } else {
             if (d->decoded.empty() && d->current_frame.data.empty()) return void(c.x[0] = kNoOutputBuffer);
             // Video EOS: deliver only after GetOutputBuffer has consumed all real frames and reached the final frame's end.
@@ -611,10 +609,8 @@ void AcquireOutputBufferIndex(CPU& c) {
             st<int64_t>(c.x[2], pts);
             st<uint32_t>(c.x[3], 0);
             st<int32_t>(c.x[4], remaining);
-            more_outputs = remaining > 0;
         }
     }
-    if (more_outputs) signal(c, *d, 1);
     c.x[0] = kOk;
 }
 
@@ -688,6 +684,7 @@ void ReleaseOutputBufferIndex(CPU& c) {  // Status (int index)
             d->free_outputs.push_back(index);
             d->released++;
         }
+        if (!d->started) return void(c.x[0] = kOk);
         if (d->audio()) {
             output_avail = !d->eos_sent && !d->decoded.empty() && !d->free_outputs.empty();
             if (output_avail && (d->decoded.front().flags & kFlagEos) && int(d->free_outputs.size()) < d->max_outputs()) {

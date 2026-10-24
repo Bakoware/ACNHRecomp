@@ -475,6 +475,51 @@ bool make_position_invariant(const std::vector<uint32_t>& in, std::vector<uint32
     return changed;
 }
 
+// ---- NoContraction on vertex arithmetic -------------------------------------------------------------------------
+// When shaders are translated with QueryHostReducedPrecision() => true, Decoration.NoContraction is omitted.
+// On Metal/MoltenVK, shader compilation may contract FMul + FAdd into FMA differently between a depth-only
+// prepass VS (which only outputs position) and a color pass VS (which computes normals, UVs, etc.).
+// Decorating vertex arithmetic with NoContraction (decoration 42) prevents divergent FMA contractions.
+bool add_no_contraction(const std::vector<uint32_t>& in, std::vector<uint32_t>& out) {
+    constexpr uint32_t OpDecorate = 71, DecorationNoContraction = 42;
+    if (in.size() < 5) return false;
+    std::vector<uint32_t> targets;
+    size_t insert_at = in.size();
+    for (size_t i = 5; i < in.size();) {
+        uint32_t len = in[i] >> 16, op = in[i] & 0xffff;
+        if (!len || i + len > in.size()) return false;
+        if (insert_at == in.size() && op >= 21 && op <= 32) {
+            insert_at = i;
+        }
+        switch (op) {
+            case 129:  // OpFAdd
+            case 131:  // OpFSub
+            case 133:  // OpFMul
+            case 135:  // OpFDiv
+            case 137:  // OpFRem
+            case 139:  // OpFMod
+            case 142:  // OpVectorTimesScalar
+            case 143:  // OpMatrixTimesScalar
+            case 144:  // OpVectorTimesMatrix
+            case 145:  // OpMatrixTimesVector
+            case 146:  // OpMatrixTimesMatrix
+            case 148:  // OpDot
+                if (len >= 3) targets.push_back(in[i + 2]);
+                break;
+            default:
+                break;
+        }
+        i += len;
+    }
+    if (targets.empty() || insert_at == in.size()) return false;
+    out.assign(in.begin(), in.begin() + insert_at);
+    for (uint32_t id : targets) {
+        out.insert(out.end(), {(3u << 16) | OpDecorate, id, DecorationNoContraction});
+    }
+    out.insert(out.end(), in.begin() + insert_at, in.end());
+    return true;
+}
+
 // ---- float controls ---------------------------------------------------------------------------------------------
 // Maxwell shaders keep infinities and NaNs (a min against 1/0, a compare of a NaN), and the translated code relies on it.
 // Vulkan lets a compiler assume finite values unless the shader asks for SignedZeroInfNanPreserve (SPV_KHR_float_controls).
@@ -556,6 +601,11 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
         return e && std::atoi(e) != 0;
     }();
     if (invariant && s->stage == ShaderStage::Vertex && make_position_invariant(code, next)) code.swap(next);
+    static const bool no_contraction = [] {
+        const char* e = std::getenv("NX_NO_CONTRACTION");
+        return e && std::atoi(e) != 0;
+    }();
+    if (no_contraction && s->stage == ShaderStage::Vertex && add_no_contraction(code, next)) code.swap(next);
     static const bool fc = [] {
         const char* e = std::getenv("NX_FLOAT_CONTROLS");
         return e && std::atoi(e) != 0;

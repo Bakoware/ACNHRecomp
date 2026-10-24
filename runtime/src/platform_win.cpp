@@ -363,6 +363,13 @@ void set_fullscreen(bool) {}
 void set_master_volume(float) {}
 std::string controller_name() { return ""; }
 std::string controller_kind() { return ""; }
+void rumble(float low_freq, float high_freq, uint32_t duration_ms) {
+    (void)duration_ms;
+    XINPUT_VIBRATION v{};
+    v.wLeftMotorSpeed = static_cast<WORD>(std::clamp(low_freq, 0.0f, 1.0f) * 65535.0f);
+    v.wRightMotorSpeed = static_cast<WORD>(std::clamp(high_freq, 0.0f, 1.0f) * 65535.0f);
+    XInputSetState(0, &v);
+}
 void open_path(const std::string&) {}
 void pick_path(bool, const std::string&) {}
 bool pick_result(std::string& path) {

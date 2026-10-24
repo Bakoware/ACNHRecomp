@@ -180,32 +180,59 @@ void combo(const std::string& key, const std::string& fallback, const Choices& c
 }
 
 // An on/off pill like the game's.
-void toggle(const std::string& key, bool fallback) {
+void toggle(const std::string& key, bool fallback, float width = 0) {
     bool on = config_get_bool(key, fallback);
-    float h = ImGui::GetFrameHeight(), w = h * 1.9f;
+    float h = ImGui::GetFrameHeight(), pill_w = h * 1.9f;
+    const char* label = tr(on ? "common.on" : "common.off");
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    float natural_w = pill_w + 10.0f * g_scale + ts.x;
+    float hit_w = width > 0 ? width : natural_w;
     ImVec2 p = ImGui::GetCursorScreenPos();
-    if (ImGui::InvisibleButton("##t", ImVec2(w, h))) {
-        on = !on;
-        store(key, on ? "1" : "0");
-    }
+    bool clicked = ImGui::InvisibleButton("##t", ImVec2(hit_w, h), ImGuiButtonFlags_EnableNav);
     bool focused = ImGui::IsItemFocused();
-    if (focused) {
+    bool hov = ImGui::IsItemHovered();
+    bool was_on = on;
+    bool changed = false;
+
+    if (clicked) {
+        on = !on;
+        changed = true;
+    } else if (focused) {
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) {
-            if (on) { on = false; store(key, "0"); }
+            if (on) {
+                on = false;
+                changed = true;
+            }
         } else if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) {
-            if (!on) { on = true; store(key, "1"); }
+            if (!on) {
+                on = true;
+                changed = true;
+            }
         }
     }
-    bool hov = ImGui::IsItemHovered() || focused;
+
+    if (changed) {
+        store(key, on ? "1" : "0");
+        if (key == "input.rumble" && !was_on && on) {
+            plat::rumble(0.45f, 0.70f, 180);
+        }
+    }
+
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImU32 bg = on ? rgb(118, 200, 170) : rgb(214, 200, 168);
-    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), bg, h * 0.5f);
-    if (hov) dl->AddRect(p, ImVec2(p.x + w, p.y + h), rgb(246, 170, 40), h * 0.5f, 0, 2.5f * g_scale);
+    dl->AddRectFilled(p, ImVec2(p.x + pill_w, p.y + h), bg, h * 0.5f);
+    if (hov || focused) {
+        dl->AddRect(p, ImVec2(p.x + pill_w, p.y + h), rgb(246, 170, 40), h * 0.5f, 0, 2.5f * g_scale);
+        if (focused) {
+            dl->AddRect(ImVec2(p.x - 2.0f * g_scale, p.y - 2.0f * g_scale),
+                        ImVec2(p.x + hit_w + 2.0f * g_scale, p.y + h + 2.0f * g_scale),
+                        rgb(246, 170, 40), 6.0f * g_scale, 0, 2.0f * g_scale);
+        }
+    }
     float r = h * 0.5f - 3.0f * g_scale;
-    ImVec2 knob(on ? p.x + w - h * 0.5f : p.x + h * 0.5f, p.y + h * 0.5f);
+    ImVec2 knob(on ? p.x + pill_w - h * 0.5f : p.x + h * 0.5f, p.y + h * 0.5f);
     dl->AddCircleFilled(knob, r, rgb(255, 255, 255));
-    ImGui::SameLine();
-    ImGui::TextUnformatted(tr(on ? "common.on" : "common.off"));
+    dl->AddText(ImVec2(p.x + pill_w + 10.0f * g_scale, p.y + (h - ts.y) * 0.5f), rgb(107, 79, 54), label);
 }
 
 void slider(const std::string& key, int lo, int hi, int fallback, const char* fmt, float width) {
@@ -292,7 +319,7 @@ void page_video() {
                {"1920x1080", "1920 × 1080"}, {"2560x1440", "2560 × 1440"}, {"3840x2160", "3840 × 2160"}},
               w);
     });
-    row("video.show_fps", "video.show_fps.desc", [&](float) { toggle("video.show_fps", config_show_fps()); });
+    row("video.show_fps", "video.show_fps.desc", [&](float w) { toggle("video.show_fps", config_show_fps(), w); });
     row("video.mode", nullptr, [&](float w) {
         combo("video.mode", "docked", {{"docked", tr("video.render.docked")}, {"handheld", tr("video.render.handheld")}}, w);
     });
@@ -328,13 +355,13 @@ void page_video() {
         combo("video.gpu", "auto",
               {{"auto", tr("common.auto")}, {"discrete", tr("video.gpu.discrete")}, {"integrated", tr("video.gpu.integrated")}}, w);
     });
-    row("video.shaders", "video.shaders.desc", [&](float) { toggle("video.shader_prepare", true); });
+    row("video.shaders", "video.shaders.desc", [&](float w) { toggle("video.shader_prepare", true, w); });
 }
 
 void page_audio() {
     row("audio.volume", nullptr, [&](float w) { slider("audio.volume", 0, 100, 100, "%d%%", w); });
-    row("audio.reverb", "audio.reverb.desc", [&](float) { toggle("audio.reverb", true); });
-    row("audio.background", nullptr, [&](float) { toggle("audio.mute_background", false); });
+    row("audio.reverb", "audio.reverb.desc", [&](float w) { toggle("audio.reverb", true, w); });
+    row("audio.background", nullptr, [&](float w) { toggle("audio.mute_background", false, w); });
 }
 
 // Keyboard bindings: the action, its config key and its default key (SDL scancode name).
@@ -378,7 +405,7 @@ void page_controls() {
                {"xbox", tr("controls.glyphs.xbox")}, {"playstation", tr("controls.glyphs.playstation")}},
               w);
     });
-    row("controls.rumble", nullptr, [&](float) { toggle("input.rumble", true); });
+    row("controls.rumble", nullptr, [&](float w) { toggle("input.rumble", true, w); });
     row("controls.deadzone", nullptr, [&](float w) { slider("input.deadzone", 5, 50, 24, "%d%%", w); });
     ImGui::Dummy(ImVec2(0, 6 * g_scale));
     ImGui::PushFont(nullptr);
@@ -614,6 +641,85 @@ bool settings_draw(float scale, ImFont* title) {
     float tab_w = portrait ? ImGui::GetContentRegionAvail().x : 210.0f * scale;
     ImGui::BeginChild("##tabs", ImVec2(tab_w, portrait ? 64.0f * scale : -footer), ImGuiChildFlags_None,
                       ImGuiWindowFlags_NavFlattened | (portrait ? ImGuiWindowFlags_HorizontalScrollbar : 0));
+
+    std::string glyph_style = config_get("controls.glyphs", "auto");
+    std::string kind = plat::controller_kind();
+    std::string l_label = "L / LB", r_label = "R / RB";
+    if (glyph_style == "playstation" || (glyph_style == "auto" && kind == "playstation")) {
+        l_label = "L1";
+        r_label = "R1";
+    } else if (glyph_style == "xbox" || (glyph_style == "auto" && kind == "xbox")) {
+        l_label = "LB";
+        r_label = "RB";
+    } else if (glyph_style == "switch" || (glyph_style == "auto" && kind == "switch")) {
+        l_label = "L";
+        r_label = "R";
+    }
+    std::string l_text = "◀ " + l_label;
+    std::string r_text = r_label + " ▶";
+
+    bool l_down = ImGui::IsKeyDown(ImGuiKey_GamepadL1) || ImGui::IsKeyDown(ImGuiKey_GamepadL2) || ImGui::IsKeyDown(ImGuiKey_PageUp);
+    bool r_down = ImGui::IsKeyDown(ImGuiKey_GamepadR1) || ImGui::IsKeyDown(ImGuiKey_GamepadR2) || ImGui::IsKeyDown(ImGuiKey_PageDown);
+
+    if (!portrait) {
+        float avail_w = ImGui::GetContentRegionAvail().x;
+        float gap = 8.0f * scale;
+        float bw = (avail_w - gap) * 0.5f;
+        float bh = 28.0f * scale;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        ImVec2 p_l = ImGui::GetCursorScreenPos();
+        ImGui::PushID("bumper_l");
+        if (ImGui::InvisibleButton("##l", ImVec2(bw, bh))) g_page = (g_page - 1 + kPageCount) % kPageCount;
+        bool l_hov = ImGui::IsItemHovered();
+        bool l_active = l_down || l_hov;
+        ImU32 l_bg = l_active ? rgb(246, 170, 40) : rgb(242, 233, 210);
+        ImU32 l_border = l_active ? rgb(230, 140, 20) : rgb(216, 202, 174);
+        ImU32 l_text_col = l_active ? rgb(255, 255, 255) : rgb(107, 79, 54);
+        dl->AddRectFilled(p_l, ImVec2(p_l.x + bw, p_l.y + bh), l_bg, bh * 0.5f);
+        dl->AddRect(p_l, ImVec2(p_l.x + bw, p_l.y + bh), l_border, bh * 0.5f, 0, 1.5f * scale);
+        ImVec2 ts_l = ImGui::CalcTextSize(l_text.c_str());
+        dl->AddText(ImVec2(p_l.x + (bw - ts_l.x) * 0.5f, p_l.y + (bh - ts_l.y) * 0.5f), l_text_col, l_text.c_str());
+        ImGui::PopID();
+
+        ImGui::SameLine(0, gap);
+
+        ImVec2 p_r = ImGui::GetCursorScreenPos();
+        ImGui::PushID("bumper_r");
+        if (ImGui::InvisibleButton("##r", ImVec2(bw, bh))) g_page = (g_page + 1) % kPageCount;
+        bool r_hov = ImGui::IsItemHovered();
+        bool r_active = r_down || r_hov;
+        ImU32 r_bg = r_active ? rgb(246, 170, 40) : rgb(242, 233, 210);
+        ImU32 r_border = r_active ? rgb(230, 140, 20) : rgb(216, 202, 174);
+        ImU32 r_text_col = r_active ? rgb(255, 255, 255) : rgb(107, 79, 54);
+        dl->AddRectFilled(p_r, ImVec2(p_r.x + bw, p_r.y + bh), r_bg, bh * 0.5f);
+        dl->AddRect(p_r, ImVec2(p_r.x + bw, p_r.y + bh), r_border, bh * 0.5f, 0, 1.5f * scale);
+        ImVec2 ts_r = ImGui::CalcTextSize(r_text.c_str());
+        dl->AddText(ImVec2(p_r.x + (bw - ts_r.x) * 0.5f, p_r.y + (bh - ts_r.y) * 0.5f), r_text_col, r_text.c_str());
+        ImGui::PopID();
+
+        ImGui::Dummy(ImVec2(0, 6.0f * scale));
+    } else {
+        float bh = 52.0f * scale;
+        float bw = 64.0f * scale;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        ImVec2 p_l = ImGui::GetCursorScreenPos();
+        ImGui::PushID("bumper_l");
+        if (ImGui::InvisibleButton("##l", ImVec2(bw, bh))) g_page = (g_page - 1 + kPageCount) % kPageCount;
+        bool l_hov = ImGui::IsItemHovered();
+        bool l_active = l_down || l_hov;
+        ImU32 l_bg = l_active ? rgb(246, 170, 40) : rgb(242, 233, 210);
+        ImU32 l_border = l_active ? rgb(230, 140, 20) : rgb(216, 202, 174);
+        ImU32 l_text_col = l_active ? rgb(255, 255, 255) : rgb(107, 79, 54);
+        dl->AddRectFilled(p_l, ImVec2(p_l.x + bw, p_l.y + bh), l_bg, bh * 0.5f);
+        dl->AddRect(p_l, ImVec2(p_l.x + bw, p_l.y + bh), l_border, bh * 0.5f, 0, 1.5f * scale);
+        ImVec2 ts_l = ImGui::CalcTextSize(l_text.c_str());
+        dl->AddText(ImVec2(p_l.x + (bw - ts_l.x) * 0.5f, p_l.y + (bh - ts_l.y) * 0.5f), l_text_col, l_text.c_str());
+        ImGui::PopID();
+        ImGui::SameLine();
+    }
+
     for (int k = 0; k < kPageCount; k++) {
         if (portrait && k) ImGui::SameLine();
         ImGui::PushID(k);
@@ -622,7 +728,7 @@ bool settings_draw(float scale, ImFont* title) {
         float bw = portrait ? std::max(140.0f * scale, ImGui::CalcTextSize(label).x + bh + 24 * scale) : -1;
         ImVec2 p = ImGui::GetCursorScreenPos();
         bool sel = g_page == k;
-        if (ImGui::InvisibleButton("##p", ImVec2(bw < 0 ? ImGui::GetContentRegionAvail().x : bw, bh))) g_page = k;
+        if (ImGui::InvisibleButton("##p", ImVec2(bw < 0 ? ImGui::GetContentRegionAvail().x : bw, bh), ImGuiButtonFlags_EnableNav)) g_page = k;
         bool hov = ImGui::IsItemHovered() || ImGui::IsItemFocused();
         ImVec2 q = ImGui::GetItemRectMax();
         ImDrawList* cl = ImGui::GetWindowDrawList();
@@ -634,6 +740,27 @@ bool settings_draw(float scale, ImFont* title) {
         ImVec2 ts = ImGui::CalcTextSize(label);
         cl->AddText(ImVec2(p.x + bh + 6 * scale, p.y + (bh - ts.y) * 0.5f), sel ? rgb(255, 255, 255) : rgb(107, 79, 54),
                     label);
+        ImGui::PopID();
+    }
+
+    if (portrait) {
+        ImGui::SameLine();
+        float bh = 52.0f * scale;
+        float bw = 64.0f * scale;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        ImVec2 p_r = ImGui::GetCursorScreenPos();
+        ImGui::PushID("bumper_r");
+        if (ImGui::InvisibleButton("##r", ImVec2(bw, bh))) g_page = (g_page + 1) % kPageCount;
+        bool r_hov = ImGui::IsItemHovered();
+        bool r_active = r_down || r_hov;
+        ImU32 r_bg = r_active ? rgb(246, 170, 40) : rgb(242, 233, 210);
+        ImU32 r_border = r_active ? rgb(230, 140, 20) : rgb(216, 202, 174);
+        ImU32 r_text_col = r_active ? rgb(255, 255, 255) : rgb(107, 79, 54);
+        dl->AddRectFilled(p_r, ImVec2(p_r.x + bw, p_r.y + bh), r_bg, bh * 0.5f);
+        dl->AddRect(p_r, ImVec2(p_r.x + bw, p_r.y + bh), r_border, bh * 0.5f, 0, 1.5f * scale);
+        ImVec2 ts_r = ImGui::CalcTextSize(r_text.c_str());
+        dl->AddText(ImVec2(p_r.x + (bw - ts_r.x) * 0.5f, p_r.y + (bh - ts_r.y) * 0.5f), r_text_col, r_text.c_str());
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -695,8 +822,7 @@ bool settings_draw(float scale, ImFont* title) {
     // Cancel (B / Escape) closes the screen when nothing else wants it (never after an import: see g_must_quit).
     if (g_must_quit) open = true;
     if (g_capturing < 0 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
-        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
-         ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadBack, false)))
+        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         open = false;
     if (g_must_quit) open = true;
     ImGui::End();

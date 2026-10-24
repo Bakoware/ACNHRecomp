@@ -424,10 +424,6 @@ bool ui_pad(uint64_t buttons, int32_t lx, int32_t ly) {
         ui_toggle();
         return true;
     }
-    if (g_visible && ((pressed & kPlus) || (pressed & kMinus))) {
-        ui_toggle();
-        return true;
-    }
     if (!g_visible) return false;
     struct Map {
         uint64_t bit;

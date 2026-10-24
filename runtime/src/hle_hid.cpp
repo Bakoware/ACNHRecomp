@@ -15,6 +15,7 @@
 #include <nx/game.h>
 #include <nx/runtime.h>
 
+#include "config.h"
 #include "platform.h"
 
 namespace nx {
@@ -272,7 +273,36 @@ void BindNpadStyleSetUpdateEvent(CPU& c) {  // (const u32& id, SystemEventType*,
     log("hid: style set event bound for id %#x, signalled", id);
 }
 
-void GetVibrationDeviceHandles(CPU& c) { c.x[0] = 0; }  // no vibration devices
+void GetVibrationDeviceHandles(CPU& c) {
+    uint32_t id = c.x[2] ? ld<uint32_t>(c.x[2]) : 0;
+    if (id == 0 && c.x[0] && int32_t(c.x[1]) > 0) {
+        st<uint32_t>(c.x[0], 1);
+        c.x[0] = 1;
+        return;
+    }
+    c.x[0] = 0;
+}
+
+void GetVibrationDeviceInfo(CPU& c) {
+    if (c.x[0]) {
+        st<uint32_t>(c.x[0], 1);      // VibrationDeviceType_LinearResonantActuator
+        st<uint32_t>(c.x[0] + 4, 1);  // VibrationDevicePosition_Left
+    }
+    c.x[0] = 0;
+}
+
+void SendVibrationValue(CPU& c) {
+    if (config_get_bool("input.rumble", true) && c.x[1]) {
+        float amp_low = ld<float>(c.x[1]);
+        float amp_high = ld<float>(c.x[1] + 8);
+        if (amp_low > 0.001f || amp_high > 0.001f) {
+            plat::rumble(amp_low, amp_high, 60);
+        } else {
+            plat::rumble(0.0f, 0.0f, 0);
+        }
+    }
+    c.x[0] = 0;
+}
 void ShowControllerSupport(CPU& c) {                     // (ControllerSupportResultInfo*, const Arg&)
     st<int8_t>(c.x[0], 1);        // player count
     st<uint32_t>(c.x[0] + 4, 0);  // selected npad id: No1
@@ -460,7 +490,7 @@ NX_HLE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", GetNpadState);
 NX_HLE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", GetNpadState);
 NX_HLE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", GetVibrationDeviceHandles);
 NX_HLE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", noop);
-NX_HLE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", noop);
+NX_HLE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", GetVibrationDeviceInfo);
 NX_HLE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE", ShowControllerSupport);
 // SDK 16 (Super Mario Bros. Wonder)
 NX_HLE("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj", GetNpadStatesFullKey);
@@ -488,7 +518,7 @@ NX_HLE("_ZN2nn3hid19GetPlayerLedPatternERKj", GetPlayerLedPattern);
 NX_HLE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE", noop);
 NX_HLE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", noop);
 NX_HLE("_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_", noop);
-NX_HLE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", noop);
+NX_HLE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", SendVibrationValue);
 NX_HLE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", noop);
 NX_HLE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", noop);
 NX_HLE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", zero);

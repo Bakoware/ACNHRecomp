@@ -97,7 +97,8 @@ void player() {
         {
             std::unique_lock lk(g_out.lock);
             auto ready = [&] {
-                return g_out.started && !g_out.queued.empty() && (!device || plat::audio_queued() < kMaxInFlight);
+                return g_out.started && !g_out.queued.empty() &&
+                       (renderer_running() || !device || plat::audio_queued() < kMaxInFlight);
             };
             g_out.cv.wait_for(lk, std::chrono::milliseconds(5), ready);
             out_stats();
@@ -173,6 +174,7 @@ void StopAudioOut(CPU&) {
     log("audio: AudioOut stopped");
     std::lock_guard lk(g_out.lock);
     g_out.started = false;
+    g_out.cv.notify_all();
 }
 
 void CloseAudioOut(CPU&) {
@@ -180,6 +182,7 @@ void CloseAudioOut(CPU&) {
     std::lock_guard lk(g_out.lock);
     g_out.started = false;
     g_out.queued.clear(), g_out.released.clear();
+    g_out.cv.notify_all();
 }
 
 // (AudioOut*, const AudioOutParameter&): the same without a system event (the game polls for released buffers).
@@ -217,10 +220,11 @@ void AppendAudioOutBuffer(CPU& c) {  // (AudioOut*, AudioOutBuffer*)
 void GetReleasedAudioOutBuffer(CPU& c) {
     std::unique_lock lk(g_out.lock);
     g_out_polls++;
+    if (g_out.released.empty() && g_out.started && !g_out.queued.empty()) {
+        g_out.cv.wait_for(lk, std::chrono::milliseconds(2), [] { return !g_out.released.empty() || !g_out.started; });
+    }
     if (g_out.released.empty()) {
         c.x[0] = 0;
-        lk.unlock();
-        std::this_thread::yield();
         return;
     }
     c.x[0] = g_out.released.front();

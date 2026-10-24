@@ -67,6 +67,7 @@ struct PadState {
     int32_t lx = 0, ly = 0, rx = 0, ry = 0;
 };
 void read_pad(PadState& p);  // player 1
+void rumble(float low_freq, float high_freq, uint32_t duration_ms);
 // The mouse as the console's touch screen (hle_hid.cpp): the left button held at (u, v), across the window (0..1).
 // The picture's place in the window comes from the present step (set_picture_box: x, y, w, h in 0..1), so a click
 // on the bars touches nothing.

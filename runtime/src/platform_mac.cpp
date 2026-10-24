@@ -440,6 +440,15 @@ std::string controller_kind() {
     }
 }
 
+void rumble(float low_freq, float high_freq, uint32_t duration_ms) {
+    uint16_t low16 = static_cast<uint16_t>(std::clamp(low_freq, 0.0f, 1.0f) * 65535.0f);
+    uint16_t high16 = static_cast<uint16_t>(std::clamp(high_freq, 0.0f, 1.0f) * 65535.0f);
+    std::lock_guard lk(g_main_lock);
+    g_main_work.push_back([low16, high16, duration_ms] {
+        if (g_gamepad) SDL_RumbleGamepad(g_gamepad, low16, high16, duration_ms);
+    });
+}
+
 void open_path(const std::string& path) {
     std::string url = "file://" + path;
     if (!path.empty() && path[0] != '/') {

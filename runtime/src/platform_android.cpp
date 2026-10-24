@@ -385,6 +385,7 @@ void set_fullscreen(bool) {}
 void set_master_volume(float) {}
 std::string controller_name() { return ""; }
 std::string controller_kind() { return ""; }
+void rumble(float, float, uint32_t) {}
 void open_path(const std::string&) {}
 void pick_path(bool, const std::string&) {}
 bool pick_result(std::string& path) {
