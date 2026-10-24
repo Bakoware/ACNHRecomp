@@ -383,17 +383,19 @@ bool make_swapchain() {
         extent.width, extent.height, caps.currentExtent.width, caps.currentExtent.height, unsigned(caps.currentTransform),
         caps.supportedTransforms, unsigned(ci.compositeAlpha), caps.supportedCompositeAlpha,
         caps.supportedUsageFlags);
-    // The game paces itself on its vsync event (hle_vi.cpp, 60 Hz): a FIFO present also waited for the display's own
-    // refresh, two clocks drifting against each other (stutter near 60 fps, docs/nvn/DEBUG.md #33). MAILBOX never
-    // blocks and shows the newest frame at each refresh; else IMMEDIATE (MoltenVK: no display sync in the Metal
-    // layer, the macOS compositor still shows whole frames at its refresh), FIFO last. NX_FIFO=1: FIFO (DEBUG.md #62).
+    // VSync (video.vsync, NX_VSYNC; on by default): FIFO. IMMEDIATE tore in full screen on the Mac (MoltenVK turns the
+    // Metal layer's display sync off; only a window goes through the compositor, which hid it). Off: the game paces
+    // itself on its vsync event (hle_vi.cpp, 60 Hz) and a FIFO present also waits for the display's own refresh, two
+    // clocks drifting against each other (stutter near 60 fps, docs/nvn/DEBUG.md #33): MAILBOX never blocks and shows
+    // the newest frame at each refresh, else IMMEDIATE. NX_FIFO=1: FIFO either way (DEBUG.md #62).
     ci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    const bool vsync = !(std::getenv("NX_VSYNC") && std::getenv("NX_VSYNC")[0] == '0');
     uint32_t modes_n = 0;
     p_vkGetPhysicalDeviceSurfacePresentModesKHR(g_physical, g_surface, &modes_n, nullptr);
     std::vector<VkPresentModeKHR> modes(modes_n);
     p_vkGetPhysicalDeviceSurfacePresentModesKHR(g_physical, g_surface, &modes_n, modes.data());
     auto has = [&](VkPresentModeKHR m) { return std::find(modes.begin(), modes.end(), m) != modes.end(); };
-    if (!std::getenv("NX_FIFO")) {
+    if (!vsync && !std::getenv("NX_FIFO")) {
         if (has(VK_PRESENT_MODE_MAILBOX_KHR))
             ci.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
         else if (has(VK_PRESENT_MODE_IMMEDIATE_KHR))

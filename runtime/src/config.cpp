@@ -94,6 +94,7 @@ const Mapping kMappings[] = {
     {"video.frame_cap", "NX_FPS_CAP", fps_cap, true},
     {"video.frame_gen", "NX_FRAMEGEN", framegen, true},
     {"video.async_shaders", "NX_ASYNC_PIPELINES", off_is_zero, true},
+    {"video.vsync", "NX_VSYNC", off_is_zero, true},
     {"video.shader_prepare", "NX_PIPE_PREWARM", off_is_zero, true},
     {"audio.reverb", "NX_AUDIO_REVERB", off_is_zero, false},  // also read live (hle_audio.cpp)
 };

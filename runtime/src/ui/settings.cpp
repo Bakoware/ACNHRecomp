@@ -337,6 +337,7 @@ void page_video() {
               w);
     });
     row("video.show_fps", "video.show_fps.desc", [&](float w) { toggle("video.show_fps", config_show_fps(), w); });
+    row("video.vsync", "video.vsync.desc", [&](float w) { toggle("video.vsync", true, w); });
     row("video.mode", nullptr, [&](float w) {
         combo("video.mode", "docked", {{"docked", tr("video.render.docked")}, {"handheld", tr("video.render.handheld")}}, w);
     });
