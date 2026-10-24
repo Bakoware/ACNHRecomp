@@ -281,6 +281,16 @@ with `unhandled 0` for each of the three modules.
 
 ## Playing
 
+**macOS, the simplest way:** double-click **`Jogar ACNH.command`** in the repository folder. It rebuilds whatever
+changed in the runtime (a few seconds; nothing when up to date) and starts the game with your settings. To get the
+same shortcut on the desktop, run once:
+
+```sh
+tools/install_mac_shortcut.sh
+```
+
+From a terminal:
+
 ```sh
 tools/acnh_linux.sh              # quality: TV mode, 1080p
 tools/acnh_linux.sh balanced     # 720p (handheld mode) upscaled with FSR 1
@@ -493,6 +503,14 @@ Notes:
   shape).
 
 ## Troubleshooting and FAQ
+
+**Reporting a bug or a crash.**
+Settings (Plus + Minus) > About > **Create problem report** writes a `.zip` on the desktop with this session's log,
+the previous one (where a crash or freeze shows up), your settings and the computer's model, with no game data and
+your home folder's path replaced by `~`. Attach it to a GitHub issue. If the game crashes before the settings screen
+opens, run `NX_REPORT=1 private/acnh/build/acnh` once after the crash.
+
+**The picture tears in full screen.** Settings > Video > VSync (on by default).
 
 **The setup stops with "first run: pass --keys, --base and --update".**
 The import has not been done yet; pass all three on the first run.
