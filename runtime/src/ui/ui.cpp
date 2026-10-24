@@ -436,6 +436,10 @@ bool ui_pad(uint64_t buttons, int32_t lx, int32_t ly) {
         ui_toggle();
         return true;
     }
+    if (g_visible && ((pressed & kPlus) || (pressed & kMinus))) {
+        ui_toggle();
+        return true;
+    }
     if (!g_visible) return false;
     struct Map {
         uint64_t bit;
@@ -443,10 +447,12 @@ bool ui_pad(uint64_t buttons, int32_t lx, int32_t ly) {
     };
     // The game's A confirms whatever controller it is (the platform already mapped the physical button to it).
     static const Map map[] = {
-        {1ull << 0, ImGuiKey_GamepadFaceDown},  {1ull << 1, ImGuiKey_GamepadFaceRight},
-        {1ull << 2, ImGuiKey_GamepadFaceUp},    {1ull << 3, ImGuiKey_GamepadFaceLeft},
-        {1ull << 6, ImGuiKey_GamepadL1},        {1ull << 7, ImGuiKey_GamepadR1},
-        {1ull << 12, ImGuiKey_GamepadDpadLeft}, {1ull << 13, ImGuiKey_GamepadDpadUp},
+        {1ull << 0, ImGuiKey_GamepadFaceDown},   {1ull << 1, ImGuiKey_GamepadFaceRight},
+        {1ull << 2, ImGuiKey_GamepadFaceUp},     {1ull << 3, ImGuiKey_GamepadFaceLeft},
+        {1ull << 6, ImGuiKey_GamepadL1},         {1ull << 7, ImGuiKey_GamepadR1},
+        {1ull << 8, ImGuiKey_GamepadL2},         {1ull << 9, ImGuiKey_GamepadR2},
+        {1ull << 10, ImGuiKey_GamepadStart},    {1ull << 11, ImGuiKey_GamepadBack},
+        {1ull << 12, ImGuiKey_GamepadDpadLeft},  {1ull << 13, ImGuiKey_GamepadDpadUp},
         {1ull << 14, ImGuiKey_GamepadDpadRight}, {1ull << 15, ImGuiKey_GamepadDpadDown},
     };
     for (const Map& m : map) {
@@ -456,7 +462,7 @@ bool ui_pad(uint64_t buttons, int32_t lx, int32_t ly) {
     // The left stick as a D-pad with hysteresis.
     static int sx = 0, sy = 0;
     auto stick = [&](int32_t v, int& state, ImGuiKey neg, ImGuiKey pos) {
-        int now = v > 20000 ? 1 : v < -20000 ? -1 : (std::abs(v) < 12000 ? 0 : state);
+        int now = v > 16000 ? 1 : v < -16000 ? -1 : (std::abs(v) < 9000 ? 0 : state);
         if (now == state) return;
         if (state < 0) push({Input::Key, neg, false});
         if (state > 0) push({Input::Key, pos, false});
