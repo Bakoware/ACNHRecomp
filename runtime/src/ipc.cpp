@@ -1,6 +1,7 @@
 ﻿// HIPC message parsing / building, sessions, domains and the service manager (sm:).
 #include "ipc.h"
 
+#include <map>
 #include <mutex>
 #include <unordered_map>
 
@@ -43,7 +44,17 @@ std::shared_ptr<Service> make_service(const std::string& name) {
 uint32_t Service::handle(IpcCtx& ctx) {
     auto it = cmds.find(ctx.cmd);
     if (it != cmds.end()) return it->second(ctx);
-    log("ipc: %s cmd %u not implemented (stub ok)", name.c_str(), ctx.cmd);
+    // A few times each, then every 10000th: ACNH polls pctl 1018 every frame (28k lines in a day-1 log).
+    static std::mutex m;
+    static std::map<std::pair<std::string, uint32_t>, uint64_t> calls;
+    uint64_t n;
+    {
+        std::lock_guard lk(m);
+        n = ++calls[{name, ctx.cmd}];
+    }
+    if (n <= 3 || n % 10000 == 0)
+        log("ipc: %s cmd %u not implemented (stub ok)%s", name.c_str(), ctx.cmd,
+            n == 3 ? "; further calls logged every 10000th" : n > 3 ? " (10000 more)" : "");
     return 0;
 }
 
