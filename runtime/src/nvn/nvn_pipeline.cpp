@@ -533,12 +533,14 @@ PKey bytes_of(const PipelineKey& k) {
     return out;
 }
 
-// NX_ASYNC_PIPELINES=1: a draw whose pipeline is not built yet is skipped (the pipeline compiles on a worker thread
-// and the next frames draw it) instead of stalling the replay. Changes the picture for those frames; off by default.
+// A draw whose pipeline is not built yet is skipped (the pipeline compiles on a worker thread and the next frames
+// draw it) instead of stalling the replay: on the M1 a Metal pipeline takes ~80 ms, and arriving on the island built
+// 8 in one frame (a 755 ms freeze; 98 ms at worst with this). What is new shows up a few frames late. On by default;
+// NX_ASYNC_PIPELINES=0 (video.async_shaders off) compiles in place.
 bool async_skip() {
     static const bool on = [] {
         const char* e = std::getenv("NX_ASYNC_PIPELINES");
-        return e && e[0] == '1' && pool().threads > 0;
+        return !(e && e[0] == '0') && pool().threads > 0;
     }();
     return on;
 }

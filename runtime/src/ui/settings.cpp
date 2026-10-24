@@ -122,8 +122,9 @@ void row(const char* label, const char* desc, const std::function<void(float wid
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + text_w);
     ImGui::TextUnformatted(tr(label));
     if (desc && *desc) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-        ImGui::SetWindowFontScale(0.82f);
+        // A darker brown than TextDisabled: the descriptions were hard to read on the cream background.
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.47f, 0.39f, 0.31f, 1.0f));
+        ImGui::SetWindowFontScale(0.86f);
         ImGui::TextWrapped("%s", tr(desc));
         ImGui::SetWindowFontScale(1.0f);
         ImGui::PopStyleColor();
@@ -156,6 +157,17 @@ void combo(const std::string& key, const std::string& fallback, const Choices& c
             break;
         }
     }
+    // A value wider than the box ends in "…" (the full text in the list and on hover), instead of being cut mid-word.
+    std::string full = shown;
+    float room = (width > 0 ? width : ImGui::CalcItemWidth()) - ImGui::GetFrameHeight() - ImGui::GetStyle().FramePadding.x * 2;
+    if (room > 0 && ImGui::CalcTextSize(shown.c_str()).x > room) {
+        while (!shown.empty() && ImGui::CalcTextSize((shown + "…").c_str()).x > room) {
+            shown.pop_back();
+            while (!shown.empty() && (uint8_t(shown.back()) & 0xC0) == 0x80) shown.pop_back();  // whole UTF-8 characters
+            if (!shown.empty() && uint8_t(shown.back()) >= 0xC0) shown.pop_back();
+        }
+        shown += "…";
+    }
     ImGui::SetNextItemWidth(width);
     if (ImGui::BeginCombo("##c", shown.c_str())) {
         for (auto& [v, t] : choices) {
@@ -165,6 +177,7 @@ void combo(const std::string& key, const std::string& fallback, const Choices& c
         }
         ImGui::EndCombo();
     }
+    if (full != shown && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", full.c_str());
     bool focused = ImGui::IsItemFocused();
     if (focused) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -360,6 +373,7 @@ void page_video() {
               {{"auto", tr("common.auto")}, {"discrete", tr("video.gpu.discrete")}, {"integrated", tr("video.gpu.integrated")}}, w);
     });
     row("video.shaders", "video.shaders.desc", [&](float w) { toggle("video.shader_prepare", true, w); });
+    row("video.async_shaders", "video.async_shaders.desc", [&](float w) { toggle("video.async_shaders", true, w); });
 }
 
 void page_audio() {
@@ -628,6 +642,49 @@ void page_about() {
     report_section();
 }
 
+// The button names the hints show (the footer, "Back to the game (B)"): the keyboard's keys with no controller, else
+// the controller's (or the chosen icon style's): the bottom face button confirms and the right one cancels.
+struct NavNames {
+    std::string tabs, move, ok, back;
+};
+NavNames nav_names() {
+    std::string style = config_get("controls.glyphs", "auto"), kind = plat::controller_kind();
+    if (kind.empty()) return {"PgUp / PgDn", tr("nav.arrows"), "Enter", "Esc"};
+    std::string k = style == "auto" ? kind : style;
+    if (k == "playstation") return {"L1 / R1", "D-Pad", "X", "O"};
+    if (k == "xbox") return {"LB / RB", "D-Pad", "A", "B"};
+    return {"L / R", "D-Pad", "A", "B"};
+}
+
+// nav.hint with its button names ("L / R", "D-Pad", "A", "B" in every language) replaced by n's.
+std::string nav_hint(const NavNames& n) {
+    std::string h = tr("nav.hint");
+    auto sub = [&](const std::string& from, const std::string& to) {
+        if (size_t at = h.find(from); at != std::string::npos) h.replace(at, from.size(), to);
+    };
+    sub("L / R  ", n.tabs + "  ");
+    sub("D-Pad  ", n.move + "  ");
+    sub("    A  ", "    " + n.ok + "  ");
+    sub("    B  ", "    " + n.back + "  ");
+    return h;
+}
+
+// A shoulder button's label with a drawn arrow: "◀ L1" or "R1 ▶", centred in the button at p of the given size.
+void bumper_label(ImDrawList* dl, ImVec2 p, ImVec2 size, const std::string& label, bool left, ImU32 col) {
+    ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+    float a = ts.y * 0.42f, gap = ts.y * 0.35f;  // arrow height, space to the text
+    float w = a * 0.85f + gap + ts.x;
+    float x = p.x + (size.x - w) * 0.5f, cy = p.y + size.y * 0.5f;
+    if (left) {
+        dl->AddTriangleFilled(ImVec2(x, cy), ImVec2(x + a * 0.85f, cy - a * 0.5f), ImVec2(x + a * 0.85f, cy + a * 0.5f), col);
+        dl->AddText(ImVec2(x + a * 0.85f + gap, cy - ts.y * 0.5f), col, label.c_str());
+    } else {
+        dl->AddText(ImVec2(x, cy - ts.y * 0.5f), col, label.c_str());
+        float ax = x + ts.x + gap;
+        dl->AddTriangleFilled(ImVec2(ax + a * 0.85f, cy), ImVec2(ax, cy - a * 0.5f), ImVec2(ax, cy + a * 0.5f), col);
+    }
+}
+
 bool g_quit_confirm = false;
 
 }  // namespace
@@ -663,7 +720,7 @@ bool settings_draw(float scale, ImFont* title) {
         ImVec2 ts = ImGui::CalcTextSize(tr("app.title"));
         dl->AddText(ImVec2(p.x + h * 1.1f, p.y + (h - ts.y) * 0.5f), rgb(255, 255, 255), tr("app.title"));
         ImGui::PopFont();
-        std::string resume_text = std::string(tr("common.resume")) + " (B)";
+        std::string resume_text = std::string(tr("common.resume")) + " (" + nav_names().back + ")";
         float bw = std::max(130.0f * scale, ImGui::CalcTextSize(resume_text.c_str()).x + 36 * scale);
         ImGui::SetCursorScreenPos(ImVec2(p.x + w - bw - 10 * scale, p.y + (h - ImGui::GetFrameHeight()) * 0.5f));
         ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(255, 255, 255, 230));
@@ -703,8 +760,10 @@ bool settings_draw(float scale, ImFont* title) {
         l_label = "L";
         r_label = "R";
     }
-    std::string l_text = "◀ " + l_label;
-    std::string r_text = r_label + " ▶";
+    if (kind.empty()) l_label = "PgUp", r_label = "PgDn";  // no controller: the keys that change the tab
+    // The arrows are drawn (bumper_label): the UI font has no ◀ ▶, which showed as "?".
+    const std::string& l_text = l_label;
+    const std::string& r_text = r_label;
 
     bool l_down = ImGui::IsKeyDown(ImGuiKey_GamepadL1) || ImGui::IsKeyDown(ImGuiKey_GamepadL2) || ImGui::IsKeyDown(ImGuiKey_PageUp);
     bool r_down = ImGui::IsKeyDown(ImGuiKey_GamepadR1) || ImGui::IsKeyDown(ImGuiKey_GamepadR2) || ImGui::IsKeyDown(ImGuiKey_PageDown);
@@ -726,8 +785,7 @@ bool settings_draw(float scale, ImFont* title) {
         ImU32 l_text_col = l_active ? rgb(255, 255, 255) : rgb(107, 79, 54);
         dl->AddRectFilled(p_l, ImVec2(p_l.x + bw, p_l.y + bh), l_bg, bh * 0.5f);
         dl->AddRect(p_l, ImVec2(p_l.x + bw, p_l.y + bh), l_border, bh * 0.5f, 0, 1.5f * scale);
-        ImVec2 ts_l = ImGui::CalcTextSize(l_text.c_str());
-        dl->AddText(ImVec2(p_l.x + (bw - ts_l.x) * 0.5f, p_l.y + (bh - ts_l.y) * 0.5f), l_text_col, l_text.c_str());
+        bumper_label(dl, p_l, ImVec2(bw, bh), l_text, true, l_text_col);
         ImGui::PopID();
 
         ImGui::SameLine(0, gap);
@@ -742,8 +800,7 @@ bool settings_draw(float scale, ImFont* title) {
         ImU32 r_text_col = r_active ? rgb(255, 255, 255) : rgb(107, 79, 54);
         dl->AddRectFilled(p_r, ImVec2(p_r.x + bw, p_r.y + bh), r_bg, bh * 0.5f);
         dl->AddRect(p_r, ImVec2(p_r.x + bw, p_r.y + bh), r_border, bh * 0.5f, 0, 1.5f * scale);
-        ImVec2 ts_r = ImGui::CalcTextSize(r_text.c_str());
-        dl->AddText(ImVec2(p_r.x + (bw - ts_r.x) * 0.5f, p_r.y + (bh - ts_r.y) * 0.5f), r_text_col, r_text.c_str());
+        bumper_label(dl, p_r, ImVec2(bw, bh), r_text, false, r_text_col);
         ImGui::PopID();
 
         ImGui::Dummy(ImVec2(0, 6.0f * scale));
@@ -762,8 +819,7 @@ bool settings_draw(float scale, ImFont* title) {
         ImU32 l_text_col = l_active ? rgb(255, 255, 255) : rgb(107, 79, 54);
         dl->AddRectFilled(p_l, ImVec2(p_l.x + bw, p_l.y + bh), l_bg, bh * 0.5f);
         dl->AddRect(p_l, ImVec2(p_l.x + bw, p_l.y + bh), l_border, bh * 0.5f, 0, 1.5f * scale);
-        ImVec2 ts_l = ImGui::CalcTextSize(l_text.c_str());
-        dl->AddText(ImVec2(p_l.x + (bw - ts_l.x) * 0.5f, p_l.y + (bh - ts_l.y) * 0.5f), l_text_col, l_text.c_str());
+        bumper_label(dl, p_l, ImVec2(bw, bh), l_text, true, l_text_col);
         ImGui::PopID();
         ImGui::SameLine();
     }
@@ -807,8 +863,7 @@ bool settings_draw(float scale, ImFont* title) {
         ImU32 r_text_col = r_active ? rgb(255, 255, 255) : rgb(107, 79, 54);
         dl->AddRectFilled(p_r, ImVec2(p_r.x + bw, p_r.y + bh), r_bg, bh * 0.5f);
         dl->AddRect(p_r, ImVec2(p_r.x + bw, p_r.y + bh), r_border, bh * 0.5f, 0, 1.5f * scale);
-        ImVec2 ts_r = ImGui::CalcTextSize(r_text.c_str());
-        dl->AddText(ImVec2(p_r.x + (bw - ts_r.x) * 0.5f, p_r.y + (bh - ts_r.y) * 0.5f), r_text_col, r_text.c_str());
+        bumper_label(dl, p_r, ImVec2(bw, bh), r_text, false, r_text_col);
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -838,7 +893,7 @@ bool settings_draw(float scale, ImFont* title) {
             ImGui::SameLine();
         } else {
             ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(ImVec4(0.50f, 0.45f, 0.38f, 1.0f), "%s", tr("nav.hint"));
+            ImGui::TextColored(ImVec4(0.50f, 0.45f, 0.38f, 1.0f), "%s", nav_hint(nav_names()).c_str());
             ImGui::SameLine();
         }
         float qw = ImGui::CalcTextSize(tr("common.quit_game")).x + 30 * scale;
