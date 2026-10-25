@@ -784,7 +784,12 @@ void present_image(const int32_t* crop, Record&& record) {
         frame_sig_flush(presents);
     }
     const bool due = real && frame_dump_due(presents);
-    bool dump = src && due;
+    // The game's boot shows black frames for a while: every other one is read back until one has something on it. A
+    // window held back for that (plat::picture_shown) appears then, and the startup hint follows (ui.cpp).
+    static bool picture = false;
+    static uint64_t first_ns = 0;
+    const bool probe = real && !picture && src && presents % 2 == 0;
+    bool dump = src && (due || probe);
     if (dump) transition(g_cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);  // the present pass left it sampled
     dump = dump && frame_dump_record(g_cb, *src);
     VkSemaphore rendered = async_gpu() ? frame_rendered_semaphore(index) : g_rendered;
@@ -792,8 +797,15 @@ void present_image(const int32_t* crop, Record&& record) {
         frame_submit(acquired, rendered, {}, dump);
     else
         end_and_wait(acquired, rendered);
-    if (dump) frame_dump_write(*src, presents);
+    if (dump && due) frame_dump_write(*src, presents);
     if (due) debug_dump_textures(presents);
+    bool shown_now = false;
+    if (real && !picture) {
+        if (!first_ns) first_ns = plat::monotonic_ns();
+        // Not every format can be read back; after a minute the window shows whatever it holds.
+        picture = (dump && probe && frame_readback_lit(*src)) || plat::monotonic_ns() - first_ns > 60'000'000'000ull;
+        shown_now = picture;
+    }
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
     pi.pWaitSemaphores = &rendered;
@@ -802,6 +814,11 @@ void present_image(const int32_t* crop, Record&& record) {
     pi.pImageIndices = &index;
     r = p_vkQueuePresentKHR(g_queue, &pi);
     plat::frame_presented();  // cores, CPU time, present intervals (frame_stats.cpp)
+    if (shown_now) {
+        log("nvn/vk: first picture at present %llu", (unsigned long long)presents);
+        plat::picture_shown();
+        ui::ui_picture_shown();
+    }
     // SUBOPTIMAL re-makes the swapchain only when the surface size changed: Android returns it for every present when
     // the swapchain's transform is not the display's (a Galaxy S23 did for Hades), a rebuild per frame.
     bool remake = r == VK_ERROR_OUT_OF_DATE_KHR;

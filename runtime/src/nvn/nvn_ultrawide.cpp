@@ -374,6 +374,7 @@ void projection_update(CPU& c) {
 }
 }  // namespace
 NX_HOOK(0x37e5958, projection_update);
+NX_HOOK(0x37e5968, projection_update);  // 3.0.3 (games/acnh/hooks-3.0.3.txt): the same function 0x10 further
 
 // ---- UI projection -------------------------------------------------------------------------------------------------
 // sead::OrthoProjection (vtable main+0x4a65688; near +0x98, far +0x9c, top +0xa0, bottom +0xa4, left +0xa8, right
@@ -454,6 +455,7 @@ void ortho_update(CPU& c) {
 }
 }  // namespace
 NX_HOOK(0x37e5b5c, ortho_update);
+NX_HOOK(0x37e5b6c, ortho_update);  // 3.0.3 (games/acnh/hooks-3.0.3.txt): the same function 0x10 further
 
 bool uw_ortho_on() { return !ortho_off(); }
 

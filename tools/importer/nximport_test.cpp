@@ -2,16 +2,21 @@
 // checks what the importer finds in them. The synthetic files are not valid NCAs, so every run ends in the importer's
 // "no game program" error; what is asserted is the log line that says what it found and the errors of broken images.
 //   nximport_test
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
 
 #include "nximport.h"
+#include "nxposix_win.h"
 
 namespace {
 
@@ -121,9 +126,11 @@ bool has(const std::string& s, const char* t) { return s.find(t) != std::string:
 }  // namespace
 
 int main() {
-    char tpl[] = "/tmp/nximport_test_XXXXXX";
-    if (!mkdtemp(tpl)) return 2;
-    tmpdir = tpl;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path tmp = fs::temp_directory_path(ec) / ("nximport_test_" + std::to_string(std::random_device{}()));
+    if (ec || !fs::create_directories(tmp, ec)) return 2;
+    tmpdir = tmp.generic_string();
     Bytes junk(0x40, 0xAB);
 
     std::vector<F> parts = {{"update", build({{"upd0.nca", junk}}, true)},
@@ -171,7 +178,6 @@ int main() {
     check(r.rc != 0 && has(r.error, "no .nsp or .xci"), "no container in the folder", r);
 
     printf("%s\n", fails ? "FAILED" : "all passed");
-    std::string cmd = "rm -rf '" + tmpdir + "'";
-    if (system(cmd.c_str())) {}
+    fs::remove_all(tmp, ec);
     return fails ? 1 : 0;
 }

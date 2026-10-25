@@ -44,6 +44,14 @@ void set_env_default(const char* name, const std::string& value) {
 #endif
 }
 
+void unset_env(const char* name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");  // an empty value removes the variable
+#else
+    unsetenv(name);
+#endif
+}
+
 // Settings that become a runtime switch. `map` turns the setting's value into the variable's ("" = leave unset).
 struct Mapping {
     const char* key;
@@ -228,10 +236,10 @@ void config_apply() {
         if (value.empty()) continue;
         std::string v = m.map(value);
         if (std::string(m.env) == "NX_HANDHELD") {
-            if (v == "0") unsetenv("NX_HANDHELD");
+            if (v == "0") unset_env("NX_HANDHELD");
             else if (v == "1") set_env_default("NX_HANDHELD", "1");
         } else if (std::string(m.env) == "NX_FSR") {
-            if (v == "0") unsetenv("NX_FSR");
+            if (v == "0") unset_env("NX_FSR");
             else if (v == "1") set_env_default("NX_FSR", "1");
         } else if (!v.empty()) {
             set_env_default(m.env, v);

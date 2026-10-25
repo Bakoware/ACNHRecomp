@@ -1,25 +1,23 @@
 cmake_minimum_required(VERSION 3.25)
-project(SwitchGamesRecomp C CXX)
+project(ACNHRecomp C CXX)
+
+if(NOT WIN32)
+    message(FATAL_ERROR "This branch builds for Windows only")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # The game this build is for: games/<NX_GAME>/ holds what only that game needs (game.cpp: nx/game.h), the shared
-# runtime is the rest. One build directory per game.
-set(NX_GAME "hades" CACHE STRING "Game to build (a folder under games/)")
+# runtime is the rest.
+set(NX_GAME "acnh" CACHE STRING "Game to build (a folder under games/)")
 set(NX_GAME_DIR "${CMAKE_SOURCE_DIR}/games/${NX_GAME}")
 if(NOT EXISTS "${NX_GAME_DIR}/game.cpp")
     message(FATAL_ERROR "games/${NX_GAME}/game.cpp not found")
 endif()
 
 # Generated code of the game (python -m recomp <nso> <gen dir>/<module> --name <module> --base ...). Never committed.
-# Hades keeps the layout from before there were other games (private/gen); the others use private/<game>/gen.
-if(NX_GAME STREQUAL "hades")
-    set(NX_GEN_DEFAULT "${CMAKE_SOURCE_DIR}/private/gen")
-else()
-    set(NX_GEN_DEFAULT "${CMAKE_SOURCE_DIR}/private/${NX_GAME}/gen")
-endif()
-set(NX_GEN_DIR "${NX_GEN_DEFAULT}" CACHE PATH "Recompiled module sources")
+set(NX_GEN_DIR "${CMAKE_SOURCE_DIR}/private/${NX_GAME}/gen" CACHE PATH "Recompiled module sources")
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-Wno-unused-label -Wno-unused-value -Wno-parentheses-equality -Wno-unused-variable
@@ -28,13 +26,11 @@ endif()
 if(MSVC)
     add_compile_options(/arch:AVX2)
 endif()
-if(WIN32)
-    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
-endif()
+add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 
 # Unit tests of runtime pieces that build without the game (docs/nvn/WINDOWS-PLAN.md, "Test plan"): ctest.
 option(NX_TESTS "Build the standalone unit tests" OFF)
-if(NX_TESTS AND NOT ANDROID)
+if(NX_TESTS)
     enable_testing()
     add_executable(gpu_pick_test tests/gpu_pick_test.cpp runtime/src/nvn/nvn_gpu_pick.cpp)
     target_compile_definitions(gpu_pick_test PRIVATE NX_GPU_PICK_STANDALONE)
@@ -50,47 +46,21 @@ if(NX_TESTS AND NOT ANDROID)
                    runtime/src/nvn/nvn_spirv_reflect.cpp)
     target_compile_definitions(shader_cache_test PRIVATE NX_SHADERS_STANDALONE)
     target_include_directories(shader_cache_test PRIVATE runtime/src/nvn)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/private/wonder/spirv")  # the game's own shaders: never in the repository
-        add_test(NAME shader_cache COMMAND shader_cache_test "${CMAKE_SOURCE_DIR}/private/wonder")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/private/acnh/spirv")  # the game's own shaders: never in the repository
+        add_test(NAME shader_cache COMMAND shader_cache_test "${CMAKE_SOURCE_DIR}/private/acnh")
     endif()
-    if(WIN32)
-        add_executable(memguard_test tests/memguard_test.cpp)
-        target_link_libraries(memguard_test PRIVATE psapi)
-        add_test(NAME memguard COMMAND memguard_test)
-    endif()
+    add_executable(memguard_test tests/memguard_test.cpp)
+    target_link_libraries(memguard_test PRIVATE psapi)
+    add_test(NAME memguard COMMAND memguard_test)
 endif()
 
-# Native Metal backend (docs/NATIVE_METAL.md), Apple only: SPIRV-Cross (Apache-2.0) turns the shaders into MSL.
-# Fetched at a fixed revision on the first configure. metal_shader_check runs every shader of a game through it
-# (cmake --build <dir> --target metal_shader_check; metal_shader_check private/acnh).
-if(APPLE)
-    include(FetchContent)
-    set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(spirv_cross GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
-                         GIT_TAG vulkan-sdk-1.4.309.0 GIT_SHALLOW TRUE EXCLUDE_FROM_ALL)
-    FetchContent_MakeAvailable(spirv_cross)
-    add_library(nx_mtl STATIC runtime/src/mtl/mtl_shaders.cpp)
-    target_include_directories(nx_mtl PUBLIC runtime/src)
-    target_link_libraries(nx_mtl PUBLIC spirv-cross-msl)
-    enable_language(OBJCXX)
-    add_executable(metal_shader_check EXCLUDE_FROM_ALL tests/metal_shader_check.mm)
-    target_link_libraries(metal_shader_check PRIVATE nx_mtl "-framework Metal" "-framework Foundation")
-    set_target_properties(metal_shader_check PROPERTIES OBJCXX_STANDARD 20)
-endif()
-
-# Dear ImGui: the settings screen and the launcher. tools/setup_acnh.sh downloads it into private/third_party/imgui.
+# Dear ImGui: the settings screen and the launcher. tools/setup_acnh.py downloads it into private/third_party/imgui.
 set(NX_IMGUI_DIR "${CMAKE_SOURCE_DIR}/private/third_party/imgui" CACHE PATH "Dear ImGui sources")
 
 # The launcher (launcher/): the program a player opens first. It has no game code, so it builds from a plain
 # checkout (cmake --build <dir> --target acnhrecomp_launcher) and leaves the game's targets as they are.
 option(NX_LAUNCHER "Build the first-run launcher (acnhrecomp_launcher)" ON)
-if(NX_LAUNCHER AND NOT ANDROID)
+if(NX_LAUNCHER)
     include(launcher/launcher.cmake)
 endif()
 
@@ -112,17 +82,9 @@ foreach(mod ${NX_MODULES})
     file(GLOB src CONFIGURE_DEPENDS "${NX_GEN_DIR}/${mod}/*.cpp")
     add_library(game_${mod} STATIC ${src})
     target_include_directories(game_${mod} PRIVATE runtime/include "${NX_GEN_DIR}/${mod}")
-    if(ANDROID)
-        # Hidden visibility: calls between recompiled functions are direct, not through the PLT.
-        # armv8.2-a+crypto: cpu.h's AES/SHA paths need __ARM_FEATURE_AES/SHA2 (the NDK default armv8-a has neither).
-        target_compile_options(game_${mod} PRIVATE -O2 -fPIC -fvisibility=hidden -fno-semantic-interposition
-                               -march=armv8.2-a+crypto)
-    elseif(APPLE)
-        target_compile_options(game_${mod} PRIVATE -O2 -fvisibility=hidden)
-    elseif(UNIX)
-        # Linux x86-64: AVX2/FMA/BMI as the Windows build (/arch:AVX2); no FMA contraction, so a guest fmul + fadd
-        # rounds twice, as on the Switch.
-        target_compile_options(game_${mod} PRIVATE -O2 -fvisibility=hidden -march=x86-64-v3 -ffp-contract=off)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # clang-cl: /arch:AVX2 comes from above; no FMA contraction either (clang fuses within a statement by default).
+        target_compile_options(game_${mod} PRIVATE /O2 /clang:-ffp-contract=off)
     endif()
 endforeach()
 
@@ -154,6 +116,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/hle_bcat.cpp
     runtime/src/hle_movie.cpp
     runtime/src/hle_friends.cpp
+    runtime/src/hle_ngc.cpp
     runtime/src/config.cpp
     runtime/src/glyphs.cpp
     runtime/src/input_script.cpp
@@ -226,59 +189,43 @@ else()
     set(NX_VULKAN_SDK "C:/VulkanSDK/1.4.357.0" CACHE PATH "Vulkan SDK")
 endif()
 
-if(ANDROID)
-    # NativeActivity app: lib<game>.so, entry android_main (android_native_app_glue).
-    set(GLUE "${ANDROID_NDK}/sources/android/native_app_glue")
-    add_library(${NX_GAME} SHARED ${NX_RUNTIME_SOURCES} runtime/src/platform_android.cpp
-        runtime/src/platform_android_input.cpp runtime/src/platform_android_audio.cpp runtime/src/memguard_android.cpp
-        "${GLUE}/android_native_app_glue.c")
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include" "${GLUE}")
-    # Our ANativeActivity_onCreate (platform_android.cpp) runs first, on the UI thread, then calls the glue's.
-    set_source_files_properties("${GLUE}/android_native_app_glue.c" PROPERTIES
-        COMPILE_DEFINITIONS "ANativeActivity_onCreate=glue_ANativeActivity_onCreate")
-    target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_LIBS} android log aaudio)
-    target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden -fno-semantic-interposition -march=armv8.2-a+crypto)
-    # The glue's ANativeActivity_onCreate must be exported. 16 KB page alignment: Android 15+ devices with 16 KB pages.
-    target_link_options(${NX_GAME} PRIVATE -u ANativeActivity_onCreate -Wl,-z,max-page-size=16384)
-elseif(APPLE)
-    # macOS: SDL3 (window, input, audio) and the Vulkan loader + MoltenVK from Homebrew
-    # (brew install sdl3 vulkan-headers vulkan-loader molten-vk).
-    find_package(SDL3 REQUIRED CONFIG)
-    find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS /opt/homebrew/include /usr/local/include)
-    add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_mac.cpp runtime/src/memguard_mac.cpp)
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
-    target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_LIBS} SDL3::SDL3)
-    target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
-    # The executable loads near 0x1_0000_0000, below the guest ranges (0x40_0000_0000 and up). The game runs on its
-    # own thread with a 64 MiB stack (platform_mac.cpp), so the main thread's stack size does not matter.
-elseif(UNIX)
-    # Linux: SDL3 (window, input, audio) and the system Vulkan loader, as on macOS. SDL3 from the distribution or a
-    # local build (-DCMAKE_PREFIX_PATH=<its install prefix>).
-    find_package(SDL3 REQUIRED CONFIG)
-    find_package(Threads REQUIRED)
-    find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS "${NX_VULKAN_SDK}/include" /usr/include /usr/local/include)
-    add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_linux.cpp runtime/src/memguard_linux.cpp)
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
-    target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_LIBS} SDL3::SDL3 Threads::Threads ${CMAKE_DL_LIBS})
-    target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden -march=x86-64-v3 -ffp-contract=off)
-    # The executable (PIE) loads near 0x55_5555_0000_0000, far above the guest ranges (0x40_0000_0000 and up). The
-    # game runs on its own thread with a 64 MiB stack (platform_linux.cpp).
-else()
-    add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_win.cpp runtime/src/memguard_win.cpp)
-    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_SDK}/Include")
-    target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_LIBS} xinput xaudio2 ole32 psapi)
-    # The runtime uses the portable C library (getenv, fopen, ...) on every host: no "_s" variants.
-    target_compile_definitions(${NX_GAME} PRIVATE _CRT_SECURE_NO_WARNINGS _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
-    if(MSVC)
-        # Keep host allocations low so the guest ranges (0x40_0000_0000..0x70_0000_0000) are always free; a big
-        # main-thread stack (recompiled calls nest deeply); a link map for tools/symbolize.py.
-        target_link_options(${NX_GAME} PRIVATE /STACK:67108864 /HIGHENTROPYVA:NO /MAP)
+# SDL3 (window, input, audio, pickers) from SDL's VC development package
+# (-DCMAKE_PREFIX_PATH=<SDL3-x.y.z>, tools/setup_acnh.py fetches it), and the Vulkan loader of the GPU driver.
+# Vulkan headers: NX_VULKAN_INCLUDE (the setup's Vulkan-Headers) or the LunarG SDK.
+find_package(SDL3 REQUIRED CONFIG)
+find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS "${NX_VULKAN_SDK}/Include")
+add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_win.cpp runtime/src/platform_sdl.cpp
+               runtime/src/memguard_win.cpp)
+target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
+target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_LIBS} SDL3::SDL3 ole32 psapi winmm)
+# SDL3.dll next to the game, so it starts from a double click.
+add_custom_command(TARGET ${NX_GAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                   $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:${NX_GAME}>)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # No fused multiply-add the guest code did not ask for (its float results must match).
+    target_compile_options(${NX_GAME} PRIVATE /clang:-ffp-contract=off)
+    # __builtin_cpu_supports (nx/cpu.h, the AES-NI path) needs compiler-rt's builtins, which clang-cl does not
+    # link by itself: lib/clang/<version>/lib/windows next to the compiler.
+    get_filename_component(NX_LLVM_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    file(GLOB NX_CLANG_RT "${NX_LLVM_DIR}/../lib/clang/*/lib/windows/clang_rt.builtins-x86_64.lib")
+    if(NX_CLANG_RT)
+        list(GET NX_CLANG_RT 0 NX_CLANG_RT)
+        target_link_libraries(${NX_GAME} PRIVATE "${NX_CLANG_RT}")
+    else()
+        message(WARNING "clang_rt.builtins-x86_64.lib not found next to ${CMAKE_CXX_COMPILER}: the link will miss __cpu_model")
     endif()
 endif()
+# The runtime uses the portable C library (getenv, fopen, ...) on every host: no "_s" variants.
+target_compile_definitions(${NX_GAME} PRIVATE _CRT_SECURE_NO_WARNINGS _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
+if(MSVC)
+    # Keep host allocations low so the guest ranges (0x40_0000_0000..0x70_0000_0000) are always free; a big
+    # main-thread stack (recompiled calls nest deeply); a link map for tools/symbolize.py.
+    target_link_options(${NX_GAME} PRIVATE /STACK:67108864 /HIGHENTROPYVA:NO /MAP)
+endif()
 
-# The settings screen (runtime/src/ui): Dear ImGui (NX_IMGUI_DIR, above). Without it (or on Windows/Android until
-# their platform layers feed it) the screen is a stub; config.ini still works.
-if(EXISTS "${NX_IMGUI_DIR}/imgui.cpp" AND NOT ANDROID AND NOT WIN32)
+# The settings screen (runtime/src/ui): Dear ImGui (NX_IMGUI_DIR, above), fed by platform_sdl.cpp. Without it the
+# screen is a stub; config.ini still works.
+if(EXISTS "${NX_IMGUI_DIR}/imgui.cpp")
     target_sources(${NX_GAME} PRIVATE runtime/src/ui/ui.cpp runtime/src/ui/settings.cpp runtime/src/ui/i18n.cpp
         runtime/src/ui/theme.cpp ${NX_IMGUI_DIR}/imgui.cpp ${NX_IMGUI_DIR}/imgui_draw.cpp ${NX_IMGUI_DIR}/imgui_tables.cpp
         ${NX_IMGUI_DIR}/imgui_widgets.cpp ${NX_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
@@ -306,26 +253,19 @@ if("subsdk0" IN_LIST NX_MODULES)
 endif()
 
 # libvpx and libvorbis decode VP8/VP9 + Vorbis movies (runtime/src/hle_movie.cpp; ACNH's opening movie). From the
-# system: apt install libvpx-dev libvorbis-dev, brew install libvpx libvorbis. Without libvpx the movies play with
+# system (pkg-config) or NX_VPX_INCLUDE / NX_VPX_LIBRARY. Without libvpx the movies play with
 # black frames; without libvorbis the SDK's own Vorbis decoder is used.
 find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND AND NOT ANDROID)
+if(PKG_CONFIG_FOUND)
     pkg_check_modules(VPX QUIET IMPORTED_TARGET vpx)
     pkg_check_modules(VORBIS QUIET IMPORTED_TARGET vorbis)
 endif()
 set(NX_VPX_TARGET PkgConfig::VPX)
 set(NX_VORBIS_TARGET PkgConfig::VORBIS)
-# Without pkg-config (a Mac with Homebrew's libvpx and libvorbis but no pkgconf) the libraries are looked up
-# directly; before, such a build quietly had black movies.
-if(NOT ANDROID AND NOT VPX_FOUND)
-    find_path(NX_VPX_INCLUDE vpx/vpx_decoder.h
-              HINTS $ENV{HOMEBREW_PREFIX}/include /opt/homebrew/include /opt/homebrew/opt/libvpx/include
-                    /usr/local/include /usr/local/opt/libvpx/include
-              PATHS /opt/homebrew/include /usr/local/include)
-    find_library(NX_VPX_LIBRARY vpx
-                 HINTS $ENV{HOMEBREW_PREFIX}/lib /opt/homebrew/lib /opt/homebrew/opt/libvpx/lib
-                       /usr/local/lib /usr/local/opt/libvpx/lib
-                 PATHS /opt/homebrew/lib /usr/local/lib)
+# Without pkg-config the libraries are looked up directly (NX_VPX_INCLUDE/NX_VPX_LIBRARY, NX_VORBIS_INCLUDE/...).
+if(NOT VPX_FOUND)
+    find_path(NX_VPX_INCLUDE vpx/vpx_decoder.h)
+    find_library(NX_VPX_LIBRARY vpx)
     if(NX_VPX_INCLUDE AND NX_VPX_LIBRARY)
         if(NOT TARGET nx_vpx)
             add_library(nx_vpx INTERFACE IMPORTED)
@@ -337,19 +277,10 @@ if(NOT ANDROID AND NOT VPX_FOUND)
         message(STATUS "libvpx: ${NX_VPX_LIBRARY} (without pkg-config)")
     endif()
 endif()
-if(NOT ANDROID AND NOT VORBIS_FOUND)
-    find_path(NX_VORBIS_INCLUDE vorbis/codec.h
-              HINTS $ENV{HOMEBREW_PREFIX}/include /opt/homebrew/include /opt/homebrew/opt/libvorbis/include
-                    /usr/local/include /usr/local/opt/libvorbis/include
-              PATHS /opt/homebrew/include /usr/local/include)
-    find_library(NX_VORBIS_LIBRARY vorbis
-                 HINTS $ENV{HOMEBREW_PREFIX}/lib /opt/homebrew/lib /opt/homebrew/opt/libvorbis/lib
-                       /usr/local/lib /usr/local/opt/libvorbis/lib
-                 PATHS /opt/homebrew/lib /usr/local/lib)
-    find_library(NX_OGG_LIBRARY ogg
-                 HINTS $ENV{HOMEBREW_PREFIX}/lib /opt/homebrew/lib /opt/homebrew/opt/libogg/lib
-                       /usr/local/lib /usr/local/opt/libogg/lib
-                 PATHS /opt/homebrew/lib /usr/local/lib)
+if(NOT VORBIS_FOUND)
+    find_path(NX_VORBIS_INCLUDE vorbis/codec.h)
+    find_library(NX_VORBIS_LIBRARY vorbis)
+    find_library(NX_OGG_LIBRARY ogg)
     if(NX_VORBIS_INCLUDE AND NX_VORBIS_LIBRARY AND NX_OGG_LIBRARY)
         if(NOT TARGET nx_vorbis)
             add_library(nx_vorbis INTERFACE IMPORTED)

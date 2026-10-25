@@ -1,8 +1,10 @@
 // PC test harness of the on-device importer: the same code the APK runs, fed with files from the command line.
 //   nximport --out <data folder> [--title 010015100B514000] [--verify] [--exefs] <prod.keys> [title.keys] <x.nsp|x.xci> ...
 // Prints progress and log lines (never key values).
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -13,8 +15,24 @@
 #include <vector>
 
 #include "nximport.h"
+#include "nxposix_win.h"
+
+#ifdef _WIN32
+#include <shellapi.h>
+#endif
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // The arguments as UTF-8 (paths with accents), not in the ANSI code page.
+    std::vector<std::string> utf8;
+    std::vector<char*> ptrs;
+    if (wchar_t** w = CommandLineToArgvW(GetCommandLineW(), &argc)) {
+        for (int i = 0; i < argc; i++) utf8.push_back(nxwin::narrow(w[i]));
+        LocalFree(w);
+        for (auto& s : utf8) ptrs.push_back(s.data());
+        argv = ptrs.data();
+    }
+#endif
     nxi::Options opt;
     std::vector<nxi::InputFile> inputs;
     for (int i = 1; i < argc; i++) {
@@ -34,6 +52,9 @@ int main(int argc, char** argv) {
                 return 2;
             }
             const char* slash = strrchr(argv[i], '/');
+#ifdef _WIN32
+            if (const char* bs = strrchr(argv[i], '\\'); bs && (!slash || bs > slash)) slash = bs;
+#endif
             inputs.push_back({slash ? slash + 1 : argv[i], fd});
         }
     }

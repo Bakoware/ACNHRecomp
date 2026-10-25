@@ -1,8 +1,8 @@
 // Drawn touch controls (docs/nvn/ANDROID-PORT.md A4): a fixed layout of round buttons per game, hit-tested by
-// platform_android_input.cpp and drawn by the NVN present pass (nvn_present.cpp) over the picture.
+// the platform layer and drawn by the NVN present pass (nvn_present.cpp) over the picture.
 //
 // Super Mario Bros. Wonder, landscape: A (jump, the big one) at the bottom right with B (jump), Y (dash, action) and
-// X (action) around it; ZR (roll), R, L, + and - along the top. The left half is the stick (platform_android_input.cpp):
+// X (action) around it; ZR (roll), R, L, + and - along the top. The left half is the stick (the platform layer):
 // it appears where the thumb lands, and pushed nearly all the way it also holds Y, so running needs no second thumb.
 // Games without a layout here keep their own touch handling (Hades: zones around the thumb).
 //

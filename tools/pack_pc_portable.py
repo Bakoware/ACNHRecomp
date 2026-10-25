@@ -116,7 +116,7 @@ Requisitos:
 - GPU com Vulkan 1.3 e driver atualizado (NVIDIA GTX 900 ou mais nova, AMD RX 400 ou mais nova, Intel Iris Xe / Arc / UHD 7xx)
 - 16 GB de RAM recomendados (o jogo usa 3 a 7 GB)
 
-Controles: controle Xbox (XInput, layout Nintendo: A e B trocados) ou teclado:
+Controles: controle Xbox (XInput, layout do Switch: A e B trocados) ou teclado:
   WASD / setas mover, Espaco = A (pular), Shift = B (correr), J = X, K = Y, Q/E = L/R, Enter = +, Esc = -
   Tela de titulo: L+R (Q+E). F11 ou Alt+Enter: tela cheia.
 

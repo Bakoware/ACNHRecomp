@@ -11,17 +11,17 @@ Derived files stay in `private/acnh/` (gitignored).
 | Program id | `01006F8002326000` (update `01006F8002326800`) |
 | Version targeted | **3.0.2** (base + update). The update's ExeFS is complete; its RomFS is a BKTR patch over the base's |
 | main.npdm | main thread priority 44, core 0, stack 1 MiB, **no system resource** (META +0x14 = 0) |
-| Engine | Nintendo EPD's in-house engine, called **Park** in file names (`Park_UBER_All`, `Park_Idr`) |
+| Engine | The developer's in-house engine, called **Park** in file names (`Park_UBER_All`, `Park_Idr`) |
 
 ## Modules (`tools/probe.py private/acnh/exefs`)
 
 | Module | Size | Imports / exports | What | Base used |
 |---|---|---|---|---|
-| `main` | 0x4b57930 (75 MiB) | 1,015 / 52 | the game, Havok Animation + Cloth 2019.1, NEX 4.6.11, Pia 5.31.5, NintendoWare Atk/Font/G3d/Ui2d 9.3.1 and Vfx2 20.5.4, iWnn 1.9.0 (Omron's IME), libcurl, zlib | `0x40_0000_0000` |
+| `main` | 0x4b57930 (75 MiB) | 1,015 / 52 | the game, Havok Animation + Cloth 2019.1, NEX 4.6.11, Pia 5.31.5, NW Atk/Font/G3d/Ui2d 9.3.1 and Vfx2 20.5.4, iWnn 1.9.0 (Omron's IME), libcurl, zlib | `0x40_0000_0000` |
 | `sdk` | 0xb834e8 | 8 / 23,025 | nnSdk 20.5.4 with NVN 20.5.4 | `0x40_1000_0000` |
-| `subsdk0` | 0x552b88 | 663 / 9,446 | `NintendoSDK_movie` 20.5.4 (`nn::movie`) | `0x40_1800_0000` |
+| `subsdk0` | 0x552b88 | 663 / 9,446 | `SDK_movie` 20.5.4 (`nn::movie`) | `0x40_1800_0000` |
 
-`subsdk0` is new compared with Wonder: main imports `nn::movie` from it, so it is recompiled as a third module
+`subsdk0`: main imports `nn::movie` from it, so it is recompiled as a third module
 (`NX_HAS_SUBSDK0`, `runtime/src/main.cpp`). The three bases fit the runtime's 512 MiB module reservation.
 
 Imports of main + subsdk0 per service: libc 389, c++ 375, nn::audio 186, nn::os 103, nn::hid 60, nn::socket 38,
@@ -82,7 +82,7 @@ Result of `spirv_harness --batch`: **6,200 distinct blocks (23,455 stages), 6,17
   so naming the island and the player does not go through the system's swkbd applet.
 - **Clock:** the game's day and season come from `nn::time` (the user system clock). The runtime answers it from the
   host clock (`runtime/src/svc_time.cpp`), so the island follows the computer's date and time.
-- **Online:** NEX/Pia/friends/bcat/nifm are answered offline (no network connection), as in Hades and Wonder.
+- **Online:** NEX/Pia/friends/bcat/nifm are answered offline (no network connection).
 - **Touch / mouse:** the left mouse button over the picture is the touch screen (`runtime/src/hle_hid.cpp`), and a
   click is answered by the game's two UI systems (`games/acnh/pointer.cpp`):
   - `guiTouchManager::update()` (main+31c3b50), the game's own touch support, reads `GetTouchScreenStates<16>`: a

@@ -22,7 +22,7 @@ private:
 void aes_ecb_decrypt(const Aes128& k, uint8_t* data, size_t n);
 // CTR over n bytes in place; iv is the 16-byte counter block of data[0] (big-endian, incremented per block).
 void aes_ctr(const Aes128& k, const uint8_t iv[16], uint8_t* data, size_t n);
-// XTS with Nintendo's tweak (sector number big-endian), decrypting n bytes (a whole number of sectors) in place.
+// XTS with the console's tweak (sector number big-endian), decrypting n bytes (a whole number of sectors) in place.
 void aes_xts_decrypt(const Aes128& data_key, const Aes128& tweak_key, uint64_t first_sector, size_t sector_size,
                      uint8_t* data, size_t n);
 

@@ -1,10 +1,10 @@
 // The launcher's pages (launcher.h), in the settings screen's style (ui/theme.h).
 //
 //   welcome   two ways in: set up from the game files, or pick a build folder made before
-//   files     step 1: a card each for the keys, base game, update 3.0.2, DLC and the pt-BR translation: Browse…,
+//   files     step 1: a card each for the keys, base game, update (any version, optional), DLC and the pt-BR translation: Browse…,
 //             Search (the usual folders, results to pick from) or a file dropped on it; each file checked when chosen
 //   install   step 2: where the build goes, and what this computer has (with the command to install the rest)
-//   build     step 3: tools/setup_acnh.sh running: stages, progress, log, stop; the error state
+//   build     step 3: tools/setup_acnh.py running: stages, progress, log, stop; the error state
 //   done      step 4: Play
 //   home      later starts, with a valid build remembered: Play, Settings, Rebuild, Change build folder
 //   settings  a few of the game's config.ini settings (the rest is in the game, F1)
@@ -820,9 +820,9 @@ Status combined(std::initializer_list<const Item*> items) {
 }
 
 bool files_ready() {
-    for (const Item* it : {&g_keys, &g_base, &g_update})
+    for (const Item* it : {&g_keys, &g_base})
         if (it->path.empty() || it->check.status == Status::Error) return false;
-    for (const Item* it : {&g_title_keys, &g_ptbr})
+    for (const Item* it : {&g_title_keys, &g_update, &g_ptbr})
         if (!it->path.empty() && it->check.status == Status::Error) return false;
     for (const Item& d : g_dlc)
         if (d.check.status == Status::Error) return false;
@@ -855,7 +855,7 @@ void page_files() {
         });
     };
     single("##base", kSlotBase, nx::ui::kIconLeaf, tr("launcher.item.base"), tr("launcher.item.base.desc"), true, g_base);
-    single("##update", kSlotUpdate, nx::ui::kIconHouse, tr("launcher.item.update"), tr("launcher.item.update.desc"), true,
+    single("##update", kSlotUpdate, nx::ui::kIconHouse, tr("launcher.item.update"), tr("launcher.item.update.desc"), false,
            g_update);
     Status dlc_st = Status::Empty;
     for (const Item& d : g_dlc) dlc_st = std::max(dlc_st, d.check.status);
@@ -877,7 +877,7 @@ void footer_files() {
     if (button(tr("common.back"), kWhite)) g_banner.clear(), g_page = Page::Welcome;
     bool ready = files_ready();
     if (!ready) {  // why Next is off, when it fits beside it (the cards show it too)
-        bool all = !g_keys.path.empty() && !g_base.path.empty() && !g_update.path.empty();
+        bool all = !g_keys.path.empty() && !g_base.path.empty();
         const char* why = tr(all ? "launcher.files.fix_errors" : "launcher.files.missing_required");
         ImGui::SameLine();
         float room = ImGui::GetContentRegionAvail().x - button_width(tr("launcher.next")) - ImGui::GetStyle().ItemSpacing.x;
@@ -1171,18 +1171,64 @@ void footer_build() {
 
 // ---- done and home --------------------------------------------------------------------------------------------
 
+// Set by play(): the launcher stays up, saying so, until the game's window is there to take its place.
+double g_opening_since = -1;
+
 void play() {
+    if (g_opening_since >= 0) return;  // already starting
     std::string err;
-    if (launch_game(g_build, err))
-        g_exit = true;
+    if (launch_game(g_build, err, g_window))
+        g_opening_since = ImGui::GetTime(), start_sound_play();
     else
         g_banner = trf("launcher.launch_failed", err);
+}
+
+// The window of the game that play() started opens over this one when its first picture is ready (it is made hidden
+// till then, platform_sdl.cpp), and the launcher goes. Its boot screen is black with a small mark at the bottom right,
+// so this screen fades to the same black and waits with its own mark there: the game's takes its place. Where the
+// game's window cannot be seen (not Windows), after a few seconds.
+void opening_overlay() {
+    if (g_opening_since < 0) return;
+    double t = ImGui::GetTime() - g_opening_since;
+#if defined(_WIN32)
+    const double kGiveUp = 90;  // the game shows its window after a minute at most
+#else
+    const double kGiveUp = 3;
+#endif
+    // Once the game's window is there the launcher's hides, and goes when its sound logo has played out.
+    static bool hidden = false;
+    if (!hidden && (game_window_shown() || t > kGiveUp)) SDL_HideWindow(g_window), hidden = true;
+    if (hidden && !start_sound_playing()) g_exit = true;
+    auto out_quart = [](double x) { return float(1 - std::pow(1 - std::clamp(x, 0.0, 1.0), 4.0)); };
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImVec2 size = ImGui::GetIO().DisplaySize;
+    // The page dims to black (0.55 s, decelerating): the card's colours sink first, as a lamp turned down.
+    float dim = out_quart(t / 0.55);
+    dl->AddRectFilled(ImVec2(0, 0), size, IM_COL32(0, 0, 0, int(255 * dim)));
+    // The mark: a ring turning, where the game's own will be (its centre at 92 % x 87.5 % of a 16:9 picture).
+    float a = out_quart((t - 0.35) / 0.4);
+    if (a <= 0) return;
+    float pw = std::min(size.x, size.y * 16.0f / 9.0f), ph = pw * 9.0f / 16.0f;
+    ImVec2 c((size.x - pw) * 0.5f + pw * 0.92f, (size.y - ph) * 0.5f + ph * 0.875f + (1 - a) * S(6));
+    float r = ph * 0.03f, th = std::max(2.0f, r * 0.22f);
+    dl->AddCircle(c, r, IM_COL32(255, 249, 232, int(40 * a)), 48, th);
+    float spin = float(t * 4.2);  // radians per second: quick, so the wait feels short
+    dl->PathArcTo(c, r, spin, spin + 1.9f, 32);
+    dl->PathStroke(IM_COL32(118, 200, 170, int(255 * a)), 0, th);
+    const char* text = tr("launcher.opening");
+    float fs = font_size(g_body);
+    ImVec2 ts = g_body->CalcTextSizeA(fs, FLT_MAX, 0, text);
+    dl->AddText(g_body, fs, ImVec2(c.x - r - S(14) - ts.x, c.y - ts.y * 0.5f), IM_COL32(255, 249, 232, int(170 * a)), text);
 }
 
 bool big_button(const char* label, int icon, ImU32 color, float w, float h) {
     ImVec2 p = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::InvisibleButton(label, ImVec2(w, h));
     bool hov = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+    if (ImGui::IsItemActive()) {  // pressed: the button gives a little under the finger (3 %, from its centre)
+        float dx = w * 0.015f, dy = h * 0.015f;
+        p = ImVec2(p.x + dx, p.y + dy * 2), w -= dx * 2, h -= dy * 2;
+    }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(ImVec2(p.x, p.y + S(4)), ImVec2(p.x + w, p.y + h + S(4)), rgb(80, 140, 60, 120), h * 0.5f);
     dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), hov ? kYellow : color, h * 0.5f);
@@ -1279,6 +1325,141 @@ float action_height(const char* title, const char* desc, float w) {
     return std::max(2 * r, S(8) + measure(g_body, fs, title, inner).y + measure(g_body, fs * 0.82f, desc, inner).y) + 2 * pad;
 }
 
+// ---- what the build holds: its version and its add-on content ---------------------------------------------------
+
+bool g_addons_open = false;
+double g_addons_since = 0;
+
+const BuildContents& contents(bool refresh = false) {
+    static std::string for_data;
+    static BuildContents c;
+    if (refresh || for_data != g_build.data) for_data = g_build.data, c = build_contents(g_build.data);
+    return c;
+}
+
+std::string size_text(uint64_t bytes) {
+    char t[32];
+    if (bytes >= (1ull << 30)) std::snprintf(t, sizeof t, "%.1f GB", double(bytes) / double(1ull << 30));
+    else std::snprintf(t, sizeof t, "%.0f MB", std::max(1.0, double(bytes) / double(1ull << 20)));
+    return t;
+}
+
+float out_cubic(double x) { return float(1 - std::pow(1 - std::clamp(x, 0.0, 1.0), 3.0)); }
+
+// A pill: an icon in a coloured disc, then the text. A clickable one answers the pointer like the action cards and
+// gives a little under it; `dot` marks it live (a green dot on the disc).
+bool pill(const char* id, int icon, ImU32 color, const char* text, bool clickable, bool dot, float x) {
+    float h = S(38), r = S(13), pad = S(6), fs = font_size(g_body) * 0.9f;
+    ImVec2 ts = measure(g_body, fs, text, -1);
+    float w = pad + 2 * r + S(10) + ts.x + S(16);
+    ImGui::SetCursorScreenPos(ImVec2(x, ImGui::GetCursorScreenPos().y));
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    bool hov = clickable && (ImGui::IsItemHovered() || ImGui::IsItemFocused());
+    if (clickable && ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    if (clickable && ImGui::IsItemActive()) p = ImVec2(p.x + w * 0.015f, p.y + h * 0.03f), w *= 0.97f, h *= 0.94f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 q(p.x + w, p.y + h);
+    dl->AddRectFilled(ImVec2(p.x, p.y + S(2)), ImVec2(q.x, q.y + S(2)), rgb(120, 90, 50, 22), h * 0.5f);
+    dl->AddRectFilled(p, q, hov ? rgb(255, 240, 196) : rgb(255, 252, 242), h * 0.5f);
+    dl->AddRect(p, q, hov ? rgb(246, 170, 40) : rgb(232, 220, 190), h * 0.5f, 0, hov ? S(2) : S(1));
+    ImVec2 c(p.x + pad + r, p.y + h * 0.5f);
+    dl->AddCircleFilled(c, r, color);
+    theme_icon(dl, icon, c, r * 0.62f, kWhite);
+    if (dot) {
+        ImVec2 d(c.x + r * 0.72f, c.y - r * 0.72f);
+        dl->AddCircleFilled(d, S(5), rgb(255, 252, 242));
+        dl->AddCircleFilled(d, S(3.5f), kGreen);
+    }
+    dl->AddText(g_body, fs, ImVec2(c.x + r + S(10), p.y + (h - ts.y) * 0.5f), kInk, text);
+    return clicked && clickable;
+}
+
+float pill_width(const char* text) {
+    float r = S(13), fs = font_size(g_body) * 0.9f;
+    return S(6) + 2 * r + S(10) + measure(g_body, fs, text, -1).x + S(16);
+}
+
+// Version and add-ons, side by side under the title (one under the other when they do not fit).
+void contents_row() {
+    const BuildContents& c = contents();
+    std::string ver = c.version.empty() ? tr("launcher.home.version_unknown") : trf("launcher.home.version", c.version);
+    std::string add = c.addons.empty() ? tr("launcher.addons.none")
+                                       : trf("launcher.addons.count", std::to_string(c.addons.size()));
+    float avail = ImGui::GetContentRegionAvail().x, gap = S(10), x0 = ImGui::GetCursorScreenPos().x;
+    float w1 = pill_width(ver.c_str()), w2 = pill_width(add.c_str());
+    bool stack = w1 + gap + w2 > avail;
+    float y = ImGui::GetCursorScreenPos().y;
+    pill("##version", nx::ui::kIconLeaf, kMint, ver.c_str(), false, false,
+         x0 + std::floor((avail - (stack ? w1 : w1 + gap + w2)) * 0.5f));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", g_build.data.c_str());
+    if (!stack) ImGui::SetCursorScreenPos(ImVec2(x0, y));
+    float x2 = std::floor(stack ? x0 + (avail - w2) * 0.5f : x0 + (avail - w1 - gap - w2) * 0.5f + w1 + gap);
+    if (pill("##addons", nx::ui::kIconBox, c.addons.empty() ? kGrey : kPurple, add.c_str(), true, !c.addons.empty(), x2)) {
+        contents(true);  // read again: the setup may have added some since
+        g_addons_open = true, g_addons_since = ImGui::GetTime();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+}
+
+// The add-on content, one card each: its number, size and files, and that the game loads it.
+void addons_popup() {
+    if (g_addons_open) ImGui::OpenPopup("addons");
+    // Fades in (180 ms, decelerating), right after the pill was pressed.
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, out_cubic((ImGui::GetTime() - g_addons_since) / 0.18));
+    ImGui::SetNextWindowSize(ImVec2(std::min(ImGui::GetIO().DisplaySize.x * 0.9f, S(520)), 0));
+    if (ImGui::BeginPopupModal("addons", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+        const BuildContents& c = contents();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float r = S(18);
+        dl->AddCircleFilled(ImVec2(p.x + r, p.y + r), r, c.addons.empty() ? kGrey : kPurple);
+        theme_icon(dl, nx::ui::kIconBox, ImVec2(p.x + r, p.y + r), r * 0.6f, kWhite);
+        float fs = font_size(g_title) * 0.8f;
+        dl->AddText(g_title, fs, ImVec2(p.x + 2 * r + S(12), p.y + r - fs * 0.6f), kInk, tr("launcher.addons.title"));
+        ImGui::Dummy(ImVec2(0, 2 * r + S(12)));
+        if (c.addons.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, col4(kInkSoft));
+            ImGui::TextWrapped("%s", tr("launcher.addons.empty"));
+            ImGui::PopStyleColor();
+        }
+        for (size_t k = 0; k < c.addons.size(); k++) {
+            const AddOn& o = c.addons[k];
+            float w = ImGui::GetContentRegionAvail().x, h = S(58);
+            ImVec2 q = ImGui::GetCursorScreenPos();
+            // The cards settle into place one after the other (40 ms apart, 6 px).
+            float e = out_cubic((ImGui::GetTime() - g_addons_since - 0.04 * double(k)) / 0.22);
+            q.y += (1 - e) * S(6);
+            dl->AddRectFilled(q, ImVec2(q.x + w, q.y + h), rgb(255, 252, 242, int(255 * e)), S(16));
+            dl->AddRect(q, ImVec2(q.x + w, q.y + h), rgb(232, 220, 190, int(255 * e)), S(16), 0, S(1));
+            float cr = S(15);
+            ImVec2 cc(q.x + S(14) + cr, q.y + h * 0.5f);
+            dl->AddCircleFilled(cc, cr, kPurple);
+            theme_icon(dl, nx::ui::kIconBox, cc, cr * 0.6f, kWhite);
+            std::string title = trf("launcher.addons.item", std::to_string(o.index));
+            std::string sub = size_text(o.bytes) + "  \xC2\xB7  " + trf("launcher.addons.files", std::to_string(o.files));
+            float bfs = font_size(g_body);
+            dl->AddText(g_body, bfs, ImVec2(cc.x + cr + S(12), q.y + S(9)), kInk, title.c_str());
+            dl->AddText(g_body, bfs * 0.8f, ImVec2(cc.x + cr + S(12), q.y + S(9) + bfs * 1.15f), kInkSoft, sub.c_str());
+            // Loaded: a green check and the word, at the right.
+            const char* ok = tr("launcher.addons.loaded");
+            ImVec2 os = measure(g_body, bfs * 0.85f, ok, -1);
+            float ox = q.x + w - S(14) - os.x;
+            dl->AddText(g_body, bfs * 0.85f, ImVec2(ox, q.y + (h - os.y) * 0.5f), rgb(70, 140, 60), ok);
+            ImVec2 kc(ox - S(16), q.y + h * 0.5f);
+            dl->AddCircleFilled(kc, S(10), kGreen);
+            theme_icon(dl, nx::ui::kIconCheck, kc, S(6), kWhite);
+            ImGui::Dummy(ImVec2(w, h + S(8)));
+        }
+        ImGui::Dummy(ImVec2(0, S(4)));
+        align_right({tr("launcher.addons.close")});
+        if (button(tr("launcher.addons.close"), kWhite) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+            g_addons_open = false, ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+}
+
 void page_home() {
     const bool valid = *g_build_problem == 0;
     if (!valid) {
@@ -1291,8 +1472,9 @@ void page_home() {
     if (valid) {
         hero(nx::ui::kIconHouse, kGreen, S(46));
         centered(tr("launcher.home.title"), g_title, 1.1f, kInk);
-        centered(trf("launcher.home.build", g_build.data).c_str(), g_body, 0.84f, kInkSoft);
-        ImGui::Dummy(ImVec2(0, S(14)));
+        ImGui::Dummy(ImVec2(0, S(6)));
+        contents_row();
+        ImGui::Dummy(ImVec2(0, S(16)));
         play_block();
     }
     // Settings, Rebuild, Change build folder.
@@ -1433,6 +1615,7 @@ void popups() {
         ImGui::EndPopup();
     }
     if (g_quit_after_stop && !setup_state().running) g_exit = true;
+    addons_popup();
 }
 
 }  // namespace
@@ -1480,6 +1663,7 @@ void pages_init(SDL_Window* window) {
         if (n == "build") start_setup(false);
         if (n == "done") g_page = Page::Done;
         if (n == "home") g_page = Page::Home;
+        if (n == "addons") g_page = Page::Home, g_addons_open = true, g_addons_since = -1;  // the add-on panel open
         if (n == "settings") g_page = Page::Settings;
     }
 }
@@ -1517,7 +1701,7 @@ void pages_close_requested() {
         g_exit = true;
 }
 
-bool pages_busy() { return setup_state().running || ImGui::GetTime() < g_toast_until; }
+bool pages_busy() { return setup_state().running || ImGui::GetTime() < g_toast_until || g_opening_since >= 0; }
 
 bool pages_draw(float scale, ImFont* title) {
     g_scale = scale, g_title = title, g_body = ImGui::GetFont();
@@ -1544,13 +1728,15 @@ bool pages_draw(float scale, ImFont* title) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
     ImGui::BeginChild("##page", ImVec2(0, -footer), ImGuiChildFlags_None);
     ImGui::PopStyleColor();
-    // The short pages sit in the middle of the card: their height from the last frame.
+    // The short pages sit in the middle of the card: their height from the last frame. The offset is whole pixels:
+    // ImGui rounds item positions down, so a fractional start changed the measured height and the page bobbed by a
+    // pixel every frame.
     static float content_h[8] = {};
     const int pi = int(g_page);
     const bool center = g_page == Page::Welcome || g_page == Page::Done || g_page == Page::Home;
     const float avail_h = ImGui::GetContentRegionAvail().y, top = ImGui::GetCursorPosY();
     if (center && content_h[pi] > 0 && content_h[pi] < avail_h)
-        ImGui::SetCursorPosY(top + (avail_h - content_h[pi]) * 0.4f);
+        ImGui::SetCursorPosY(std::floor(top + (avail_h - content_h[pi]) * 0.4f));
     const float start = ImGui::GetCursorPosY();
     switch (g_page) {
         case Page::Welcome: page_welcome(); break;
@@ -1581,6 +1767,7 @@ bool pages_draw(float scale, ImFont* title) {
         case Page::Settings: footer_settings(); break;
     }
     popups();
+    opening_overlay();
     ImGui::End();
     return !g_exit;
 }

@@ -1,6 +1,6 @@
 // Write watches (docs/nvn/android-perf/PLAN.md R4): whether the CPU wrote a range since it was last asked, from page
 // protection instead of hashing. A watched range is mapped read-only; the first write into one of its pages faults,
-// the crash handler (platform_android.cpp, platform_mac.cpp) hands the address here first, and the page is made
+// the crash handler (platform_win.cpp) hands the address here first, and the page is made
 // writable again with the range marked written, so the store retries and succeeds. write_watch_take re-protects the
 // range and then reads the mark: a store before the re-protection found the mark already set (its page was writable
 // only because a fault set it), one after it faults again.

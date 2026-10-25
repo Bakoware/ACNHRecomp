@@ -502,7 +502,7 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
     float scale = std::min(tw / cw, th / ch), bw = cw * scale / tw, bh = ch * scale / th;
     p.box[0] = (1 - bw) / 2, p.box[1] = (1 - bh) / 2, p.box[2] = bw, p.box[3] = bh;
     if (r == 0) plat::set_picture_box(p.box[0], p.box[1], p.box[2], p.box[3]);  // for mouse clicks (hle_hid.cpp)
-    // The touch controls (platform_android_input.cpp), in upright uv; none elsewhere.
+    // The on-screen touch controls (touch_layout.cpp), in upright uv; none on Windows.
     plat::OverlayShape shapes[kOverlayMax];
     size_t count = plat::touch_overlay(shapes, kOverlayMax);
     auto* dst = reinterpret_cast<float*>(ubo.ptr);

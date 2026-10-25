@@ -154,7 +154,7 @@ void aes_xts_decrypt(const Aes128& data_key, const Aes128& tweak_key, uint64_t s
                      size_t n) {
     for (size_t off = 0; off + sector_size <= n; off += sector_size, sector++) {
         uint8_t tw[16] = {};
-        for (int j = 0; j < 8; j++) tw[15 - j] = uint8_t(sector >> (8 * j));  // Nintendo: big-endian sector number
+        for (int j = 0; j < 8; j++) tw[15 - j] = uint8_t(sector >> (8 * j));  // the console: big-endian sector number
         tweak_key.encrypt_block(tw, tw);
         for (size_t b = 0; b < sector_size; b += 16) {
             uint8_t* p = data + off + b;

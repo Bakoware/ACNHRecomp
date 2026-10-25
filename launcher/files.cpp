@@ -70,6 +70,15 @@ uint64_t rd64(const uint8_t* p) { return uint64_t(rd32(p)) | uint64_t(rd32(p + 4
 constexpr uint64_t kBaseTitle = 0x01006F8002326000ull;
 constexpr uint64_t kUpdateTitle = kBaseTitle + 0x800;
 constexpr uint32_t kVersion302 = 2162688;  // 3.0.2's title version (release 33 << 16)
+constexpr uint32_t kVersion303 = 2228224;  // 3.0.3 (release 34): 3.0.2 a little moved, every fix ported
+
+// An update's version as players know it, where the number is known (games/acnh/versions.txt lists the builds).
+std::string version_name(uint32_t v) {
+    if (v == kVersion302) return "3.0.2";
+    if (v == kVersion303) return "3.0.3";
+    if (v == 29u << 16) return "2.0.7";
+    return "#" + std::to_string(v >> 16);
+}
 
 bool is_dlc_title(uint64_t id) { return (id & ~0xFFFull) == kBaseTitle + 0x1000 && (id & 0xFFF); }
 
@@ -243,7 +252,7 @@ std::string repo_root() {
     std::error_code ec;
     for (const std::string& s : starts)
         for (fs::path p = u8(s); !p.empty(); p = p.parent_path()) {
-            if (fs::is_regular_file(p / "tools" / "setup_acnh.sh", ec)) return str(p);
+            if (fs::is_regular_file(p / "tools" / "setup_acnh.py", ec)) return str(p);
             if (p == p.parent_path()) break;
         }
     return "";
@@ -343,8 +352,8 @@ FileCheck check_file(Kind kind, const std::string& path) {
             if (base) return ok(Status::Error, tr("launcher.err.is_base"));
             if (dlc) return ok(Status::Error, tr("launcher.err.is_dlc"));
             if (!m.has_version) return ok(Status::Warning, trf("launcher.warn.update_version", sz));
-            if (m.version != kVersion302)
-                return ok(Status::Error, trf("launcher.err.wrong_version", std::to_string(m.version >> 16)));
+            // Any version builds (docs/VERSIONS.md); only 3.0.2 and 3.0.3 get the fixes that sit at their addresses.
+            if (m.version != kVersion302 && m.version != kVersion303) return ok(Status::Warning, trf("launcher.ok.update_other", version_name(m.version)));
             return ok(Status::Ok, trf("launcher.ok.update", sz));
         default:
             if (base) return ok(Status::Error, tr("launcher.err.is_base"));
@@ -506,6 +515,30 @@ std::vector<Found> search_files(Kind kind, const std::vector<std::string>& near)
 
 // ---- builds ---------------------------------------------------------------------------------------------------
 
+BuildContents build_contents(const std::string& data) {
+    BuildContents c;
+    // version.ini (tools/acnh_version.py): "version = 2.0.7"
+    std::ifstream ini(u8(data + "/version.ini"));
+    for (std::string l; std::getline(ini, l);) {
+        size_t eq = l.find('=');
+        if (eq != std::string::npos && trim(l.substr(0, eq)) == "version") c.version = trim(l.substr(eq + 1));
+    }
+    // The add-on content the importer wrote: aoc/<index>/ (runtime/src/hle_fs.cpp mounts the same folders).
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(u8(data + "/aoc"), ec)) {
+        if (!e.is_directory(ec)) continue;
+        std::string name = str(e.path().filename());
+        if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos) continue;
+        AddOn a;
+        a.index = std::atoi(name.c_str());
+        for (auto& f : fs::recursive_directory_iterator(e.path(), ec))
+            if (f.is_regular_file(ec)) a.files++, a.bytes += f.file_size(ec);
+        c.addons.push_back(a);
+    }
+    std::sort(c.addons.begin(), c.addons.end(), [](const AddOn& x, const AddOn& y) { return x.index < y.index; });
+    return c;
+}
+
 const char* find_build(const std::string& folder, Build& out) {
 #if defined(_WIN32)
     const char* exe = "acnh.exe";
@@ -569,6 +602,25 @@ bool sdl3_dev_files() {
     return false;
 }
 
+#if defined(_WIN32)
+// The Visual Studio C++ build tools (Windows SDK, C runtime) the setup's clang-cl links against: vswhere lists them.
+bool msvc_tools() {
+    std::string pf = env("ProgramFiles(x86)");
+    fs::path vswhere = u8(pf) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe";
+    std::error_code ec;
+    if (!fs::is_regular_file(vswhere, ec)) return false;
+    std::string cmd = "\"\"" + str(vswhere) + "\" -latest -products * -requires "
+                      "Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath\"";
+    FILE* p = _popen(cmd.c_str(), "r");
+    if (!p) return false;
+    char buf[512];
+    std::string out;
+    while (std::fgets(buf, sizeof buf, p)) out += buf;
+    _pclose(p);
+    return !trim(out).empty();
+}
+#endif
+
 bool vulkan_loader() {
     if (!SDL_Vulkan_LoadLibrary(nullptr)) return false;
     SDL_Vulkan_UnloadLibrary();
@@ -584,7 +636,12 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
     };
     const std::string found = tr("launcher.check.found"), missing = tr("launcher.check.missing");
 #if defined(_WIN32)
-    r.push_back({"launcher.check.windows", Status::Error, tr("launcher.welcome.windows")});
+    // tools/setup_acnh.py fetches LLVM (clang-cl), SDL3, CMake and Ninja itself: Python, Visual Studio's C++ tools and
+    // a Vulkan driver are what it needs from the system.
+    add("launcher.check.scripts", !repo_root().empty(), Status::Error, found, tr("launcher.err.no_repo"));
+    add("launcher.check.python", in_path("py.exe") || in_path("python.exe"), Status::Error, found, missing);
+    add("launcher.check.compiler", msvc_tools(), Status::Error, found, missing);
+    add("launcher.check.vulkan", vulkan_loader(), Status::Error, found, missing);
 #else
     add("launcher.check.scripts", !repo_root().empty(), Status::Error, found, tr("launcher.err.no_repo"));
     add("launcher.check.compiler", in_path("clang") && in_path("clang++"), Status::Error, found, missing);
@@ -621,7 +678,9 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
 
 std::string install_command() {
 #if defined(_WIN32)
-    return "";
+    return "winget install Python.Python.3.13\n"
+           "winget install Microsoft.VisualStudio.2022.BuildTools --override "
+           "\"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"";
 #elif defined(__APPLE__)
     return "xcode-select --install\nbrew install llvm cmake ninja sdl3 molten-vk vulkan-loader libvpx libvorbis";
 #else

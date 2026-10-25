@@ -52,6 +52,7 @@ std::mutex g_in_lock;
 std::deque<Input> g_in;
 std::atomic<bool> g_visible{std::getenv("NX_UI_OPEN") != nullptr};  // NX_UI_OPEN=1: open from the start (tests)
 std::atomic<bool> g_first_hint{true};  // the "F1: settings" hint at startup
+std::atomic<int64_t> g_picture_ns{0};  // when the game's first picture was shown: the hint's clock starts there
 std::atomic<bool> g_capture{false};     // a key binding is being chosen (settings.cpp)
 std::atomic<int> g_captured{0};
 
@@ -289,9 +290,12 @@ void ui_vulkan_ready(PFN_vkGetInstanceProcAddr gipa, VkInstance instance, VkPhys
 
 void ui_record(VkCommandBuffer cb, VkImage image, VkFormat format, VkExtent2D extent) {
     using clock = std::chrono::steady_clock;
-    static const auto t0 = clock::now();
-    const bool hint = g_first_hint && clock::now() - t0 < std::chrono::seconds(12);
-    if (!hint) g_first_hint = false;
+    // The hint comes a second after the game's first picture (not over the black frames of its boot), for 8 s.
+    const int64_t pic = g_picture_ns;
+    const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count();
+    const float hint_t = pic ? float(now_ns - pic) / 1e9f - 1.0f : -1.0f;
+    if (hint_t > 8.0f) g_first_hint = false;
+    const bool hint = g_first_hint && pic;
     const bool show_fps = config_show_fps();
     if ((!g_visible && !hint && !show_fps) || !extent.width || !extent.height) return;
     if (!init_imgui(format)) return;
@@ -313,7 +317,7 @@ void ui_record(VkCommandBuffer cb, VkImage image, VkFormat format, VkExtent2D ex
     if (g_visible) {
         if (!settings_draw(scale, g_font_title)) g_visible = false;  // closed from the screen
     } else if (hint) {
-        settings_hint(scale);
+        settings_hint(scale, hint_t);
     }
     if (show_fps) {
         draw_fps_overlay(scale);
@@ -467,6 +471,11 @@ void ui_begin_key_capture() {
 }
 
 int ui_take_captured_key() { return g_captured.exchange(0); }
+
+void ui_picture_shown() {
+    using namespace std::chrono;
+    if (!g_picture_ns) g_picture_ns = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
 
 void ui_toggle() {
     g_visible = !g_visible;

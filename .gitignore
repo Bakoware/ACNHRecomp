@@ -32,3 +32,7 @@ refs/
 /gen/
 /build/
 .DS_Store
+
+# Dependency graphs (generated locally)
+obsidian-graph/
+PROJECT_MAP.md

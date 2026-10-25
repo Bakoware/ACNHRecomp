@@ -1,7 +1,7 @@
 // The first-run launcher: the program a player opens before there is a game build (README, "Installation").
 //
-// It asks for the player's own files (keys, base game, update 3.0.2, DLC, the optional pt-BR translation), checks
-// what this computer has, runs tools/setup_acnh.sh as a child process and follows its stages, then starts the game
+// It asks for the player's own files (keys, base game, its update if any, DLC, the optional pt-BR translation), checks
+// what this computer has, runs tools/setup_acnh.py as a child process and follows its stages, then starts the game
 // it built. Or it is pointed at a build folder made earlier. It holds no game code.
 //
 //   main.cpp      SDL3 window, Dear ImGui (SDL_Renderer backend), fonts and the frame loop
@@ -51,7 +51,7 @@ Ini& settings();  // launcher.ini (launcher_ini_path)
 
 std::string launcher_ini_path();    // NX_LAUNCHER_INI, else the user's settings folder (SDL_GetPrefPath)
 std::string default_install_dir();  // ~/.local/share, ~/Library/Application Support, %LOCALAPPDATA% + /ACNHRecomp
-std::string repo_root();            // the checkout holding tools/setup_acnh.sh, "" if not found
+std::string repo_root();            // the checkout holding tools/setup_acnh.py, "" if not found
 std::string human_size(uint64_t bytes);
 uint64_t free_space(const std::string& dir);  // of the folder, or of its nearest existing parent
 std::string parent_dir(const std::string& path);
@@ -100,6 +100,17 @@ struct Build {
 // folder with data/): "" and `out` filled, else the i18n key of the reason.
 const char* find_build(const std::string& folder, Build& out);
 
+// What a build holds: its game version (version.ini, "" if unknown) and the add-on content imported with it (aoc/).
+struct AddOn {
+    int index = 0;  // the add-on's number (its title is the application's + 0x1000 + index)
+    uint64_t bytes = 0, files = 0;
+};
+struct BuildContents {
+    std::string version;
+    std::vector<AddOn> addons;
+};
+BuildContents build_contents(const std::string& data);  // reads the disk: call when the build changes
+
 // ---- this computer (files.cpp) --------------------------------------------------------------------------------
 
 struct Prereq {
@@ -142,7 +153,14 @@ std::string setup_log_path();  // the full output, also written to <install>/log
 
 // ---- the game (pipeline.cpp) ----------------------------------------------------------------------------------
 
-bool launch_game(const Build& build, std::string& error);
+// Starts the game in its own process. Its window opens where `from` is, at its size (or maximized like it), so the
+// launcher's window seems to turn into the game's; keep `from` up until game_window_shown().
+bool launch_game(const Build& build, std::string& error, SDL_Window* from = nullptr);
+bool game_window_shown();  // the game started by launch_game shows its window, or has exited
+// start.wav next to the launcher, if there is one, played once when the game starts (a sound logo). Optional and
+// not part of the repository: whoever builds the launcher can drop their own there.
+void start_sound_play();
+bool start_sound_playing();
 void open_folder(const std::string& path);
 
 }  // namespace launcher

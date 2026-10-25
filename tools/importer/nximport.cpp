@@ -21,10 +21,12 @@
 //   NSO     "NSO0", three LZ4 segments (text, ro, data) with SHA-256 of each decompressed segment.
 #include "nximport.h"
 
+#ifndef _WIN32
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -41,6 +43,7 @@
 #include <stdexcept>
 
 #include "nxcrypto.h"
+#include "nxposix_win.h"  // Windows: the POSIX calls below over Win32 (after the standard headers)
 
 #ifdef __APPLE__
 #define fdatasync fsync  // macOS (host test build) has no fdatasync
@@ -114,7 +117,7 @@ struct FdStorage : Storage {
         if (off + n > size) fail("%s: read past the end (offset %llu)", name.c_str(), (unsigned long long)off);
         uint8_t* p = static_cast<uint8_t*>(dst);
         while (n) {
-            ssize_t r = pread(fd, p, n, off_t(off));
+            ssize_t r = pread(fd, p, n, off);
             if (r < 0 && errno == EINTR) continue;
             if (r <= 0) fail("%s: read error at %llu (%s)", name.c_str(), (unsigned long long)off, r < 0 ? strerror(errno) : "end of file");
             p += r, off += uint64_t(r), n -= size_t(r);
