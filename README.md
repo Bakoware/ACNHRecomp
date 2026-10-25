@@ -103,11 +103,22 @@ ACNHRecomp is an unofficial fan project. It is not affiliated with, endorsed by 
 publisher or the console's maker. *Animal Crossing* is a trademark of its owner. The project does not provide, and
 will not help you obtain, game files, keys or firmware.
 
-## Credits and license
+## Credits
 
-Built on the static recompilation framework credited in [LICENSE](LICENSE) and on
-[ACNHRecomp](https://github.com/Nycolazs/ACNHRecomp). Also used: Ryujinx / Ryubing's Maxwell shader translator
-(offline), Dear ImGui, SDL3, Capstone, Unicorn, libvpx, libvorbis and AMD FidelityFX FSR 1.
+- **The engine:** the static recompilation framework this project is built on (the AArch64 recompiler, the runtime,
+  NVN on Vulkan, the importer and the shader translation pipeline) is SuperMarioWonderRecomp by
+  [BelmanteGu](https://github.com/BelmanteGu), MIT.
+- **The ACNH port:** [ACNHRecomp](https://github.com/Nycolazs/ACNHRecomp) by
+  [Nycolas Rocha](https://github.com/Nycolazs), MIT: the game's runtime support, its fixes, the settings screen, the
+  launcher and the setup this Windows build continues from.
+- [Ryujinx / Ryubing](https://codeberg.org/Software_arch/Ryubing) (MIT): the Maxwell shader translator, used offline.
+- [ACNH 60 FPS + SpeedFix](https://github.com/tmouh/acnh-60fps) by tmouh (CC BY-NC 4.0): the 60 FPS game-speed
+  rescaling, downloaded by `tools/setup_60fps.sh` and applied on your machine (not redistributed here).
+- [Dear ImGui](https://github.com/ocornut/imgui), [SDL3](https://github.com/libsdl-org/SDL),
+  [Capstone](https://www.capstone-engine.org/), [Unicorn](https://www.unicorn-engine.org/), libvpx, libvorbis and
+  AMD FidelityFX FSR 1.
 
-Released under the [MIT License](LICENSE); inherited code keeps its original copyright notice. The license covers
-this project's source code only and grants no rights to the game.
+## License
+
+Released under the [MIT License](LICENSE). The code inherited from the projects above keeps their copyright
+notices (LICENSE). The license covers this project's source code only and grants no rights to the game.
