@@ -44,6 +44,9 @@ std::string setting(const std::string& key);  // a player setting: config.txt (A
 
 // ---- display, input, audio ----
 void* create_window();       // native window handle for the Vulkan surface (HWND / ANativeWindow*), kept alive
+// Blocks until the next vertical blank of the display that shows the window (Windows: DXGI), and returns its time
+// (monotonic_ns); 0 when there is none to wait on, at once.
+uint64_t wait_vblank();
 void release_window(void* w);  // done with a handle from create_window
 // The game's first frame with something on it was presented. A window held back until then (made hidden when the
 // launcher passes NX_WINDOW_RECT, so the boot's black frames never replace the launcher's screen) is shown.
@@ -101,6 +104,8 @@ void gpu_turbo();  // NX_GPU_TURBO=1: the Adreno GPU at its highest clock (perf_
 // Frame threads and present intervals (frame_stats.cpp): the cores they run on, their CPU time, NX_AFFINITY.
 // role 0: the thread that replays and presents (frame_presented ticks it); 1: the game's main thread.
 void frame_thread_tick(int role);
+// The host thread id of a role (0 replay+present, 1 game main) as last seen by frame_thread_tick, 0 before (sampler.cpp).
+uint64_t frame_thread_id(int role);
 void frame_presented();  // after each present to the display
 // Linux: asks power-profiles-daemon for its performance profile for as long as this process lives (frame_stats.cpp).
 void request_performance_profile();

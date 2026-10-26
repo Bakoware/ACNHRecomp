@@ -5,7 +5,7 @@
 // - Fit with bars: a 16:9 picture on a 19.5:9 screen keeps its shape.
 // - Alpha 1: an Android surface may take the image's alpha as transparency (compositeAlpha INHERIT), and the game's
 //   final image has no meaningful alpha.
-// On by default on Android. NX_PRESENT_PASS=1 turns it on elsewhere (checking it on the Mac), =0 off (the blit).
+// NX_PRESENT_PASS=1 turns it on (FSR and FXAA do too), =0 off (the blit).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -188,6 +188,7 @@ struct Push {
 };
 
 #include "nvn_fsr_spirv.inc"
+#include "nvn_aa_spirv.inc"
 
 struct Pass {
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -211,12 +212,23 @@ struct Pass {
     VkFramebuffer inter_fb = VK_NULL_HANDLE;
     uint32_t inter_w = 0, inter_h = 0;
     bool fsr_logged = false;
+    // FXAA (video.antialiasing = fxaa, NX_AA=fxaa): the main pass with tools/shaders/aa/fxaa.frag; not with FSR.
+    VkPipeline fxaa = VK_NULL_HANDLE;
+    bool fxaa_logged = false;
 } g;
 
 bool fsr_on() {
     static const bool on = [] {
         const char* e = std::getenv("NX_FSR");
         return e && e[0] == '1';
+    }();
+    return on;
+}
+
+bool fxaa_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_AA");
+        return e && std::strcmp(e, "fxaa") == 0;
     }();
     return on;
 }
@@ -402,6 +414,8 @@ bool make_pipeline(VkFormat format) {
 
     VkResult ok = build_pipeline(g.render_pass, kFragment, sizeof kFragment, &g.pipeline) ? VK_SUCCESS : VK_ERROR_UNKNOWN;
     if (ok == VK_SUCCESS && fsr_on() && !make_fsr()) log("nvn/vk: FSR unavailable: plain scaling");
+    if (ok == VK_SUCCESS && fxaa_on() && !build_pipeline(g.render_pass, kFxaa, sizeof kFxaa, &g.fxaa))
+        log("nvn/vk: FXAA unavailable: no anti-aliasing");
     g.format = format;
     return ok == VK_SUCCESS;
 }
@@ -414,7 +428,7 @@ bool present_pass_wanted() {
 #if defined(__ANDROID__)
         return !e || e[0] != '0';
 #else
-        return (e && e[0] == '1') || fsr_on();  // FSR is a pass of this one
+        return (e && e[0] == '1') || fsr_on() || fxaa_on();  // FSR and FXAA are passes of this one
 #endif
     }();
     return on;
@@ -436,6 +450,8 @@ bool present_pass_targets(VkFormat format, const std::vector<VkImage>& images, V
         if (g.rcas) p_vkDestroyPipeline(d, g.rcas, nullptr);
         if (g.easu_pass) p_vkDestroyRenderPass(d, g.easu_pass, nullptr);
         g.easu = g.rcas = VK_NULL_HANDLE, g.easu_pass = VK_NULL_HANDLE;
+        if (g.fxaa) p_vkDestroyPipeline(d, g.fxaa, nullptr);
+        g.fxaa = VK_NULL_HANDLE;
     }
     if (!g.pipeline && !make_pipeline(format)) {
         log("nvn/vk: present pass unavailable: frames are blitted");
@@ -549,7 +565,9 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
     VkRect2D sc{{0, 0}, g.extent};
     p_vkCmdSetViewport(cb, 0, 1, &v);
     p_vkCmdSetScissor(cb, 0, 1, &sc);
-    p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rcas_set ? g.rcas : g.pipeline);
+    if (!rcas_set && g.fxaa && !g.fxaa_logged)
+        log("nvn/vk: FXAA: %.0fx%.0f -> %ux%u", cw, ch, out_w, out_h), g.fxaa_logged = true;
+    p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rcas_set ? g.rcas : g.fxaa ? g.fxaa : g.pipeline);
     VkDescriptorSet main_set = rcas_set ? rcas_set : set;
     p_vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &main_set, 0, nullptr);
     p_vkCmdPushConstants(cb, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof p, &p);

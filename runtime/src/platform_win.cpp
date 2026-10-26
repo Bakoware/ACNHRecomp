@@ -13,6 +13,7 @@
 #include <string>
 
 #include <windows.h>
+#include <dxgi.h>
 #include <timeapi.h>
 
 #include <SDL3/SDL.h>
@@ -103,6 +104,50 @@ void set_thread_name(const char* name) {
 
 int64_t current_thread_id() { return int64_t(GetCurrentThreadId()); }
 bool profile(const int64_t*, const uint64_t* const*, size_t, int, const std::string&) { return false; }
+
+// The display's vblank through DXGI: the output of the monitor that shows the window, looked up again every 2 s (the
+// window may move to another monitor; on a laptop with two GPUs the output belongs to whichever drives the panel).
+uint64_t wait_vblank() {
+    static IDXGIFactory1* factory = nullptr;
+    static IDXGIOutput* output = nullptr;
+    static HMONITOR monitor = nullptr;
+    static uint64_t checked = 0;
+    static bool failed = false;
+    if (failed) return 0;
+    const uint64_t now = monotonic_ns();
+    if (!output || now - checked > 2000000000ull) {
+        checked = now;
+        if (!factory && FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+            failed = true;
+            return 0;
+        }
+        HWND hwnd = static_cast<HWND>(sdl_native_window());
+        HMONITOR m = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY) : MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+        if (m != monitor || !output) {
+            IDXGIOutput* found = nullptr;
+            IDXGIAdapter1* adapter = nullptr;
+            for (UINT a = 0; !found && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; a++) {
+                IDXGIOutput* o = nullptr;
+                for (UINT k = 0; !found && adapter->EnumOutputs(k, &o) != DXGI_ERROR_NOT_FOUND; k++) {
+                    DXGI_OUTPUT_DESC d{};
+                    if (SUCCEEDED(o->GetDesc(&d)) && d.Monitor == m) found = o;
+                    else o->Release();
+                }
+                adapter->Release();
+            }
+            if (found) {
+                if (output) output->Release();
+                output = found, monitor = m;
+            }
+        }
+        if (!output) {
+            failed = true;
+            return 0;
+        }
+    }
+    if (FAILED(output->WaitForVBlank())) return 0;
+    return monotonic_ns();
+}
 
 uint64_t monotonic_ns() {
     static const LARGE_INTEGER f = [] {

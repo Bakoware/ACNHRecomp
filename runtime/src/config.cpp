@@ -64,6 +64,8 @@ std::string same(const std::string& v) { return v; }
 std::string on_off(const std::string& v) { return v == "1" || v == "on" || v == "true" ? "1" : ""; }
 std::string off_is_zero(const std::string& v) { return v == "0" || v == "off" || v == "false" ? "0" : ""; }
 std::string auto_empty(const std::string& v) { return v == "auto" ? "" : v; }
+std::string off_empty(const std::string& v) { return v == "off" ? "" : v; }
+std::string game_empty(const std::string& v) { return v == "game" ? "" : v; }
 
 // pt-BR is not a console language: the fan translation replaces the European Spanish files, so the console
 // language becomes "es" and the translation's files are layered over the RomFS (hle_fs.cpp, game.mods).
@@ -103,6 +105,8 @@ const Mapping kMappings[] = {
     {"video.mode", "NX_HANDHELD", handheld, true},
     {"video.upscaler", "NX_FSR", fsr, true},
     {"video.fsr_sharpness_pct", "NX_FSR_SHARP", fsr_sharpness, true},
+    {"video.antialiasing", "NX_AA", off_empty, true},  // fxaa (nvn_present.cpp), ssaa15 / ssaa2 (nvn_ultrawide.cpp)
+    {"video.anisotropy", "NX_ANISOTROPY", game_empty, true},  // 2 .. 16 (nvn_sampler.cpp)
     {"video.gpu", "NX_GPU", auto_empty, true},
     {"video.frame_rate", "NX_PRESENT_INTERVAL", interval, true},
     {"video.frame_rate", "NX_NATIVE60", native60, true},

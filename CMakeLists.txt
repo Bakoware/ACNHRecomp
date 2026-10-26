@@ -197,7 +197,7 @@ find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS "${NX_VULKAN_SDK}/Include")
 add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_win.cpp runtime/src/platform_sdl.cpp
                runtime/src/memguard_win.cpp)
 target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
-target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_LIBS} SDL3::SDL3 ole32 psapi winmm)
+target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_LIBS} SDL3::SDL3 ole32 psapi winmm dxgi)
 # SDL3.dll next to the game, so it starts from a double click.
 add_custom_command(TARGET ${NX_GAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
                    $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:${NX_GAME}>)

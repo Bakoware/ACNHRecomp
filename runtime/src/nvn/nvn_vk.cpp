@@ -26,6 +26,10 @@
 
 #include <nx/game.h>
 
+namespace nx {
+void vblank_hold();  // hle_vi.cpp: waits for the vblank before the one the image is due at
+}
+
 namespace nx::nvn {
 
 using namespace nx::vk;
@@ -812,6 +816,7 @@ void present_image(const int32_t* crop, Record&& record) {
     pi.swapchainCount = 1;
     pi.pSwapchains = &g_swapchain;
     pi.pImageIndices = &index;
+    if (real) vblank_hold();  // on the display's vblank its interval asks for (hle_vi.cpp)
     r = p_vkQueuePresentKHR(g_queue, &pi);
     plat::frame_presented();  // cores, CPU time, present intervals (frame_stats.cpp)
     if (shown_now) {

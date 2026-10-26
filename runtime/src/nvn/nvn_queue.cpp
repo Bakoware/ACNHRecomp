@@ -31,6 +31,8 @@ namespace nx {
 void svc_profile_mark(int role);
 void svc_profile_report(uint64_t frames, int role);
 uint64_t display_period_ns();
+uint64_t tick_period_ns();               // the display's measured 60 Hz tick (hle_vi.cpp)
+void set_present_interval(int interval);  // for vblank_hold (hle_vi.cpp)
 extern std::atomic<uint64_t> g_tick_calls, g_yield_calls, g_sleep_calls;
 }
 namespace nx::nvn {
@@ -571,13 +573,14 @@ void pace_present(int interval) {
     static uint64_t next = 0;
     if (off || interval <= 0) return;
     if (g_frame < fast_until) interval = 1;
+    set_present_interval(interval);
     uint64_t now = plat::monotonic_ns();
     if (next > now) plat::sleep_ns(next - now), now = plat::monotonic_ns();
     static uint64_t presents = 0, at2 = 0;  // how often the game asks for 30 fps (interval 2), per 600 presents
     at2 += interval >= 2;
     if (++presents % 600 == 0)
         log("nvn: %llu of the last 600 presents at interval >= 2", (unsigned long long)at2), at2 = 0, log_wait_sites();
-    uint64_t period = uint64_t(interval) * display_period_ns();
+    uint64_t period = uint64_t(interval) * tick_period_ns();
     next = (next > now || now - next < period ? next : now) + period;
 }
 

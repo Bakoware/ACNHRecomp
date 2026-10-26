@@ -31,7 +31,7 @@ The mouse works as the touch screen:
 ## Requirements
 
 - Windows 10 or 11, 64-bit, with a Vulkan GPU driver.
-- Python 3.11 or newer and the Visual Studio C++ build tools ("Desktop development with C++").
+- Python 3.11 or newer, Git, and the Visual Studio C++ build tools ("Desktop development with C++").
 - 16 GB of RAM and about 30 GB free.
 - From your console: `prod.keys` (and `title.keys`), the base game NSP, optionally an update NSP and DLC NSPs.
 
@@ -41,7 +41,8 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait
 ```
 
 The setup downloads the rest (LLVM, SDL3, CMake, Ninja, Vulkan headers, Dear ImGui, the shader translator) into
-`private\third_party`.
+`private\third_party`, and the first time builds libvpx and libvorbis with vcpkg for the game's movies (the flight to
+the island is one).
 
 ## Setup
 
@@ -63,8 +64,10 @@ $env:NX_DATA_ROOT = "private\acnh-3.0.3"
 private\acnh-3.0.3\build\acnh.exe
 ```
 
-- **F1** (or Minus + Plus on a controller) opens the settings screen: display, rendering, frame rate, controls,
-  language, saves.
+- **F1** (or Minus + Plus on a controller) opens the settings screen: display, rendering, anti-aliasing, frame rate,
+  controls, language, saves. The choice that matches the console is tagged "console original".
+- **Anti-aliasing:** off (as on the console), FXAA (light, on the final picture) or supersampling 1.5x / 2x (the game
+  drawn at a higher internal resolution and scaled down: the cleanest edges, heavy on the GPU).
 - **F11** or **Alt+Enter** toggles fullscreen.
 - Any controller SDL3 recognises works (Xbox, PlayStation, Switch Pro Controller and Joy-Con, generic pads), with a
   Switch or Xbox confirm-button layout and matching button icons.

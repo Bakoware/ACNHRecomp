@@ -112,6 +112,10 @@ Scale wanted(uint64_t present) {
     } else if (int rows = std::atoi(r.c_str()); rows > 0) {
         s = rows / native;
     }
+    // video.antialiasing / NX_AA supersampling: that many times the rows, scaled down again when presented.
+    std::string aa = setting("NX_AA", "video.antialiasing", "off");
+    if (aa == "ssaa15") s *= 1.5;
+    else if (aa == "ssaa2") s *= 2.0;
     s = std::clamp(s, 0.25, 2.0);  // 2: 2160 rows (4K)
     s = std::round(s * native) / native;
     return {float(s), float(k)};

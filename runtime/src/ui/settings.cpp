@@ -320,6 +320,9 @@ bool lsfg_available() {
     return false;
 }
 
+// The choice that matches the console, tagged as such ("1080p (TV mode) · console original").
+std::string console(const char* key) { return std::string(tr(key)) + " · " + tr("common.console_tag"); }
+
 void page_video() {
     row("video.preset", "video.preset.desc", [&](float w) {
         combo("video.preset", "custom",
@@ -339,11 +342,11 @@ void page_video() {
     row("video.show_fps", "video.show_fps.desc", [&](float w) { toggle("video.show_fps", config_show_fps(), w); });
     row("video.vsync", "video.vsync.desc", [&](float w) { toggle("video.vsync", true, w); });
     row("video.mode", nullptr, [&](float w) {
-        combo("video.mode", "docked", {{"docked", tr("video.render.docked")}, {"handheld", tr("video.render.handheld")}}, w);
+        combo("video.mode", "docked", {{"docked", console("video.render.docked")}, {"handheld", tr("video.render.handheld")}}, w);
     });
     row("video.resolution", "video.resolution.desc", [&](float w) {
         combo("video.resolution", "native",
-              {{"native", tr("video.resolution.native")}, {"540", "540p"}, {"720", "720p"}, {"900", "900p"},
+              {{"native", console("video.resolution.native")}, {"540", "540p"}, {"720", "720p"}, {"900", "900p"},
                {"1080", "1080p"}, {"1440", "1440p"}, {"2160", "2160p (4K)"}, {"window", tr("video.resolution.window")}},
               w);
     });
@@ -352,20 +355,30 @@ void page_video() {
     });
     if (config_get("video.upscaler") == "fsr")
         row("video.sharpness", nullptr, [&](float w) { slider("video.fsr_sharpness_pct", 0, 100, 80, "%d%%", w); });
+    row("video.aa", "video.aa.desc", [&](float w) {
+        combo("video.antialiasing", "off",
+              {{"off", console("video.aa.off")}, {"fxaa", tr("video.aa.fxaa")}, {"ssaa15", tr("video.aa.ssaa15")},
+               {"ssaa2", tr("video.aa.ssaa2")}},
+              w);
+    });
+    row("video.aniso", "video.aniso.desc", [&](float w) {
+        combo("video.anisotropy", "game",
+              {{"game", console("video.aniso.game")}, {"2", "2x"}, {"4", "4x"}, {"8", "8x"}, {"16", "16x"}}, w);
+    });
     row("video.aspect", "video.aspect.desc", [&](float w) {
         combo("video.aspect", "16:9",
-              {{"16:9", tr("video.aspect.original")}, {"auto", tr("common.auto")}, {"16:10", "16:10"}, {"4:3", "4:3"},
+              {{"16:9", console("video.aspect.original")}, {"auto", tr("common.auto")}, {"16:10", "16:10"}, {"4:3", "4:3"},
                {"21:9", "21:9"}, {"32:9", "32:9"}, {"20:9", trf("video.aspect.phone", "20:9")},
                {"19.5:9", trf("video.aspect.phone", "19.5:9")}},
               w);
     });
     row("video.framerate", "video.framerate.desc", [&](float w) {
-        combo("video.frame_rate", "30", {{"30", tr("video.framerate.30")}, {"60", tr("video.framerate.60")}}, w);
+        combo("video.frame_rate", "30", {{"30", console("video.framerate.30")}, {"60", tr("video.framerate.60")}}, w);
     });
     // Built-in (nvn_framegen.cpp) always; lsfg-vk when it is installed (or already chosen).
     bool lsfg = lsfg_available();
     std::string fg = config_get("video.frame_gen", "off");
-    Choices fg_choices = {{"off", tr("video.framegen.off")}, {"builtin", tr("video.framegen.builtin")}};
+    Choices fg_choices = {{"off", console("video.framegen.off")}, {"builtin", tr("video.framegen.builtin")}};
     if (lsfg || fg == "lsfg") fg_choices.push_back({"lsfg", tr("video.framegen.lsfg")});
     const char* fg_desc = fg == "lsfg" ? (lsfg ? "video.framegen.desc" : "video.framegen.missing") : "video.framegen.builtin.desc";
     row("video.framegen", fg_desc, [&](float w) { combo("video.frame_gen", "off", fg_choices, w); });

@@ -92,6 +92,11 @@ bool headless() {
     return on;
 }
 
+void* sdl_native_window() {
+    SDL_Window* w = g_window;
+    return w ? SDL_GetPointerProperty(SDL_GetWindowProperties(w), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr) : nullptr;
+}
+
 void* create_window() {
     run_on_main([] {
         if (g_window) return;

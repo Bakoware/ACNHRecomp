@@ -30,6 +30,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 P = os.path.join(ROOT, "private")
 T = os.path.join(P, "third_party")
+MOVIE_LIBS = os.path.join(T, "vcpkg", "installed", "x64-windows-static-md")  # libvpx, libvorbis (vcpkg)
 WIN = os.name == "nt"
 MAC = sys.platform == "darwin"
 
@@ -195,6 +196,21 @@ def main():
             fetch(f"https://github.com/libsdl-org/SDL/releases/download/release-{SDL3}/SDL3-devel-{SDL3}-VC.zip", sdl)
         env = msvc_env()
         cc = ["-DCMAKE_C_COMPILER=clang-cl", "-DCMAKE_CXX_COMPILER=clang-cl"]
+        # libvpx and libvorbis decode the game's movies (runtime/src/hle_movie.cpp; the flight to the island is a VP9
+        # movie): static libraries built by vcpkg the first time, a few minutes. Without git the movies are black.
+        vcpkg = os.path.join(T, "vcpkg")
+        if not os.path.exists(os.path.join(MOVIE_LIBS, "lib", "vpx.lib")):
+            if not os.path.exists(os.path.join(vcpkg, "vcpkg.exe")) and shutil.which("git"):
+                if not os.path.isdir(vcpkg):
+                    run(["git", "clone", "-q", "--depth", "1", "https://github.com/microsoft/vcpkg.git", vcpkg])
+                run([os.path.join(vcpkg, "bootstrap-vcpkg.bat"), "-disableMetrics"], log=os.path.join(logs, "vcpkg.log"))
+            if os.path.exists(os.path.join(vcpkg, "vcpkg.exe")):
+                print("building libvpx and libvorbis (the game's movies; a few minutes, once)", flush=True)
+                run([os.path.join(vcpkg, "vcpkg.exe"), "install", "libvpx:x64-windows-static-md",
+                     "libvorbis:x64-windows-static-md", "--disable-metrics"], log=os.path.join(logs, "vcpkg.log"),
+                    env=env, cwd=vcpkg)
+            else:
+                print("git not found: no libvpx, the game's movies will be black", flush=True)
     else:
         for tool in ("clang", "clang++", "curl"):
             if not shutil.which(tool):
@@ -363,7 +379,7 @@ def main():
     say(f"build (-j{jobs}; the first build compiles ~5 CPU-hours of code, about {300 // jobs + 10} minutes here)")
     extra = [f"-DNX_GEN_DIR={os.path.join(G, 'gen')}"]
     if WIN:
-        extra.append(f"-DCMAKE_PREFIX_PATH={os.path.join(T, f'SDL3-{SDL3}')}")
+        extra.append(f"-DCMAKE_PREFIX_PATH={os.path.join(T, f'SDL3-{SDL3}')};{MOVIE_LIBS}")
     elif MAC:
         brew = subprocess.run(["brew", "--prefix"], capture_output=True, text=True).stdout.strip() or "/opt/homebrew"
         extra.append(f"-DCMAKE_PREFIX_PATH={brew}")
