@@ -254,12 +254,21 @@ static void sample_input() {
     // The keys also go to the game as a USB keyboard (hle_hid.cpp). While its text entry takes them, they type and
     // only the arrows, Enter and Backspace stay on the pad (cursor, confirm, delete); otherwise a key that types
     // drives the pad once held kTypeWaitMs, so the first letter typed in the text entry does not also press a button.
+    // Space (A) presses at once: waiting made casting a line or hooking a fish late, and a text entry rarely starts
+    // with a space.
     constexpr uint64_t kTypeWaitMs = 120;
     static uint64_t down_since[SDL_SCANCODE_COUNT] = {};
     uint8_t usb[32] = {};
     uint64_t mods = 0;
     const bool focused = g_window && (SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS);
     const bool typing = nx::plat::keyboard_typing();
+    const uint64_t now = SDL_GetTicks();
+    if (focused) {
+        // Noted before the keys are read: a key first seen down now has waited 0 ms, not since the clock's start.
+        const bool* k = SDL_GetKeyboardState(nullptr);
+        for (int u = 4; u < 232; u++)
+            down_since[u] = !k[u] ? 0 : down_since[u] ? down_since[u] : now;
+    }
     if (focused && typing) {
         const bool* k = SDL_GetKeyboardState(nullptr);
         if (k[SDL_SCANCODE_UP]) p.buttons |= kUp;
@@ -270,11 +279,10 @@ static void sample_input() {
         if (k[SDL_SCANCODE_BACKSPACE]) p.buttons |= kB;
     } else if (focused) {
         const bool* k = SDL_GetKeyboardState(nullptr);
-        const uint64_t now = SDL_GetTicks();
         auto key = [&](int i) {
             int sc = opt.keys[i];
-            return k[sc] && (!nx::plat::key_types(sc) || nx::plat::keyboard_state_known() ||
-                             now - down_since[sc] >= kTypeWaitMs);
+            return k[sc] && (sc == SDL_SCANCODE_SPACE || !nx::plat::key_types(sc) ||
+                             nx::plat::keyboard_state_known() || now - down_since[sc] >= kTypeWaitMs);
         };
         if (key(2)) p.lx = -kStickMax;
         if (key(3)) p.lx = kStickMax;
@@ -291,13 +299,8 @@ static void sample_input() {
     }
     if (focused) {
         const bool* k = SDL_GetKeyboardState(nullptr);
-        const uint64_t now = SDL_GetTicks();
         for (int u = 4; u < 232; u++) {
-            if (!k[u]) {
-                down_since[u] = 0;
-                continue;
-            }
-            if (!down_since[u]) down_since[u] = now;
+            if (!k[u]) continue;
             bool pad = typing && (u == SDL_SCANCODE_UP || u == SDL_SCANCODE_DOWN || u == SDL_SCANCODE_LEFT ||
                                   u == SDL_SCANCODE_RIGHT || u == SDL_SCANCODE_RETURN || u == SDL_SCANCODE_KP_ENTER ||
                                   u == SDL_SCANCODE_BACKSPACE);
@@ -308,6 +311,16 @@ static void sample_input() {
         mods = (m & SDL_KMOD_CTRL ? 1u : 0u) | (m & SDL_KMOD_SHIFT ? 2u : 0u) | (m & SDL_KMOD_LALT ? 4u : 0u) |
                (m & SDL_KMOD_RALT ? 8u : 0u) | (m & SDL_KMOD_GUI ? 16u : 0u) | (m & SDL_KMOD_CAPS ? 256u : 0u) |
                (m & SDL_KMOD_SCROLL ? 512u : 0u) | (m & SDL_KMOD_NUM ? 1024u : 0u);
+    }
+    // A tap shorter than a game frame still reaches the game: a button stays pressed kMinPressMs from its press.
+    constexpr uint64_t kMinPressMs = 40;
+    static uint64_t pressed_at[64] = {};
+    static uint64_t prev_buttons = 0;
+    for (int b = 0; b < 64; b++) {
+        const uint64_t bit = 1ull << b;
+        if ((p.buttons & bit) && !(prev_buttons & bit)) pressed_at[b] = now;
+        prev_buttons = (prev_buttons & ~bit) | (p.buttons & bit);
+        if (!(p.buttons & bit) && pressed_at[b] && now - pressed_at[b] < kMinPressMs) p.buttons |= bit;
     }
     // The settings screen takes the input while it is open (and watches for its Minus + Plus combo).
     bool ui = nx::ui::ui_pad(p.buttons, p.lx, p.ly);
