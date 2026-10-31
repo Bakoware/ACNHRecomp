@@ -687,24 +687,190 @@ void refresh_path() {
     _wputenv_s(L"PATH", merged.c_str());
 }
 
-// The output of a command (its first line), "" if it could not run.
-std::string first_line(const std::string& cmd) {
-    FILE* p = _popen(("\"" + cmd + " 2>nul\"").c_str(), "r");
-    if (!p) return "";
-    char buf[256];
-    std::string out = std::fgets(buf, sizeof buf, p) ? buf : "";
-    _pclose(p);
-    return trim(out);
+std::wstring wide_of(const std::string& s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+    if (n > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
 }
 
-// The version of the Python the setup will run with (python_command, the one launcher/pipeline.cpp starts): "3.13",
-// or "" when there is none or it does not start.
-std::string python_version(const std::string& root) {
-    std::vector<std::string> cmd = python_command(root);
-    if (cmd.empty()) return "";
-    std::string line = "\"" + cmd[0] + "\"";
-    for (size_t i = 1; i < cmd.size(); i++) line += " " + cmd[i];
-    return first_line(line + " -c \"import sys; print('%d.%d' % sys.version_info[:2])\"");
+std::string utf8_of(const std::wstring& w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string s(n > 0 ? n - 1 : 0, '\0');
+    if (n > 1) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+// Runs a program directly (no shell, no console window) and returns what it printed, "" if it did not start or did
+// not finish within timeout_ms. No cmd.exe in between: no quoting or %-expansion surprises, any path works.
+std::string run_output(const std::vector<std::string>& args, DWORD timeout_ms = 20000) {
+    std::wstring line;
+    for (const std::string& a : args) line += (line.empty() ? L"\"" : L" \"") + wide_of(a) + L"\"";
+    SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return "";
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = si.hStdError = wr;
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(wr);
+    std::string out;
+    if (ok) {
+        // Read while it runs (a full pipe would block it), until it ends or the time is up.
+        const ULONGLONG until = GetTickCount64() + timeout_ms;
+        for (;;) {
+            DWORD avail = 0;
+            while (PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) && avail) {
+                char buf[512];
+                DWORD got = 0;
+                if (!ReadFile(rd, buf, std::min<DWORD>(avail, sizeof buf), &got, nullptr) || !got) break;
+                out.append(buf, got);
+            }
+            if (WaitForSingleObject(pi.hProcess, 50) == WAIT_OBJECT_0) {
+                while (PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) && avail) {
+                    char buf[512];
+                    DWORD got = 0;
+                    if (!ReadFile(rd, buf, std::min<DWORD>(avail, sizeof buf), &got, nullptr) || !got) break;
+                    out.append(buf, got);
+                }
+                break;
+            }
+            if (GetTickCount64() > until) {
+                TerminateProcess(pi.hProcess, 1);
+                out.clear();
+                break;
+            }
+        }
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    CloseHandle(rd);
+    return out;
+}
+
+// Every folder of PATH holding tool. Microsoft Store's python.exe alias (WindowsApps) is not taken: it has no Python
+// behind it, and started it opens the Store. (The py.exe there is the Python install manager's: real.)
+std::vector<std::string> all_on_path(const char* tool) {
+    std::vector<std::string> r;
+    std::stringstream ss(env("PATH"));
+    std::string dir;
+    std::error_code ec;
+    while (std::getline(ss, dir, ';')) {
+        if (dir.empty()) continue;
+        if (lower(tool).rfind("python", 0) == 0 && lower(dir).find("\\windowsapps") != std::string::npos) continue;
+        if (fs::is_regular_file(u8(dir) / tool, ec)) r.push_back(str(u8(dir) / tool));
+    }
+    return r;
+}
+
+// Pythons Windows knows of (PEP 514: HKCU / HKLM\Software\Python\PythonCore\<version>\InstallPath), wherever they were
+// installed, the newest first.
+std::vector<std::string> registered_pythons() {
+    std::vector<std::pair<int, std::string>> found;
+    const struct { HKEY root; REGSAM view; } places[] = {
+        {HKEY_CURRENT_USER, 0}, {HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY}, {HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY}};
+    for (const auto& pl : places) {
+        HKEY core;
+        if (RegOpenKeyExW(pl.root, LR"(Software\Python\PythonCore)", 0, KEY_READ | pl.view, &core) != ERROR_SUCCESS)
+            continue;
+        wchar_t name[64];
+        for (DWORD i = 0;; i++) {
+            DWORD len = 64;
+            if (RegEnumKeyExW(core, i, name, &len, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+            int major = 0, minor = 0;
+            if (swscanf_s(name, L"%d.%d", &major, &minor) != 2 || major != 3) continue;
+            std::wstring key = std::wstring(name) + L"\\InstallPath";
+            wchar_t val[1024];
+            DWORD size = sizeof val;
+            std::wstring exe;
+            if (RegGetValueW(core, key.c_str(), L"ExecutablePath", RRF_RT_REG_SZ | pl.view, nullptr, val, &size) ==
+                ERROR_SUCCESS)
+                exe = val;
+            size = sizeof val;
+            if (exe.empty() &&
+                RegGetValueW(core, key.c_str(), nullptr, RRF_RT_REG_SZ | pl.view, nullptr, val, &size) == ERROR_SUCCESS)
+                exe = (fs::path(val) / L"python.exe").wstring();
+            std::error_code ec;
+            if (!exe.empty() && fs::is_regular_file(fs::path(exe), ec)) found.push_back({minor, utf8_of(exe)});
+        }
+        RegCloseKey(core);
+    }
+    std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<std::string> r;
+    for (auto& f : found) r.push_back(f.second);
+    return r;
+}
+
+// python.org's installer puts each version in Python3<minor>: per user under LOCALAPPDATA (the default, and what
+// winget installs), for everyone under Program Files. The Python install manager (3.14 on) uses
+// LOCALAPPDATA\Python\pythoncore-3.<minor>-64. The newest first.
+std::vector<std::string> folder_pythons() {
+    std::vector<std::pair<int, std::string>> found;
+    std::error_code ec;
+    for (const fs::path& base : {u8(env("LOCALAPPDATA")) / "Programs" / "Python", u8(env("ProgramFiles")),
+                                 u8(env("LOCALAPPDATA")) / "Python", fs::path("C:\\")}) {
+        for (const auto& d : fs::directory_iterator(base, ec)) {
+            std::string n = lower(str(d.path().filename()));
+            int minor = 0;
+            bool named = (n.rfind("python3", 0) == 0 && std::sscanf(n.c_str() + 7, "%d", &minor) == 1) ||
+                         (n.rfind("pythoncore-3.", 0) == 0 && std::sscanf(n.c_str() + 13, "%d", &minor) == 1);
+            if (named && fs::is_regular_file(d.path() / "python.exe", ec))
+                found.push_back({minor, str(d.path() / "python.exe")});
+        }
+    }
+    std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<std::string> r;
+    for (auto& f : found) r.push_back(f.second);
+    return r;
+}
+
+struct PythonFound {
+    std::vector<std::string> cmd;    // program, then arguments; empty if none started
+    std::string version;             // "3.13"
+    std::vector<std::string> tried;  // what was tried and did not answer, for the install page
+};
+
+// Each Python this computer may have, asked its version: the first 3.11 or newer wins, else the newest that answered
+// (the page then says it is too old). A py.exe left by an uninstalled Python, or the install manager without any
+// runtime, no longer hides a working python.exe found further on.
+PythonFound find_python_now() {
+    std::vector<std::vector<std::string>> cands;
+    if (const char* p = std::getenv("NX_LAUNCHER_PYTHON"); p && *p) {
+        cands.push_back({p});
+    } else {
+        for (const std::string& py : all_on_path("py.exe")) cands.push_back({py, "-3"});
+        for (const std::string& py : all_on_path("python.exe")) cands.push_back({py});
+        for (const std::string& py : registered_pythons()) cands.push_back({py});
+        for (const std::string& py : folder_pythons()) cands.push_back({py});
+    }
+    PythonFound best, r;
+    int best_minor = -1;
+    std::vector<std::string> seen;
+    for (const auto& c : cands) {
+        std::string id = lower(c[0]) + (c.size() > 1 ? " " + c[1] : "");
+        if (std::find(seen.begin(), seen.end(), id) != seen.end()) continue;
+        seen.push_back(id);
+        std::vector<std::string> ask = c;
+        ask.insert(ask.end(), {"-c", "import sys; print('PYVER %d.%d' % sys.version_info[:2])"});
+        std::string out = run_output(ask);
+        int major = 0, minor = 0;
+        size_t at = out.find("PYVER ");
+        if (at == std::string::npos || std::sscanf(out.c_str() + at + 6, "%d.%d", &major, &minor) != 2 || major != 3) {
+            r.tried.push_back(c[0]);
+            continue;
+        }
+        if (minor >= 11) {
+            r.cmd = c, r.version = "3." + std::to_string(minor);
+            return r;
+        }
+        if (minor > best_minor) best.cmd = c, best.version = "3." + std::to_string(minor), best_minor = minor;
+    }
+    if (!best.cmd.empty()) best.tried = r.tried;
+    return best.cmd.empty() ? r : best;
 }
 
 // A Windows proxy set for the browser: the downloads go through it and it looks the sites up, not this computer.
@@ -757,38 +923,11 @@ bool vulkan_loader() {
 }  // namespace
 
 #if defined(_WIN32)
-std::string installed_python() {
-    // python.org's installer puts each version in Python3<minor>: per user under LOCALAPPDATA (the default, and what
-    // winget installs), for everyone under Program Files. The Python install manager (3.14 on) uses
-    // LOCALAPPDATA\Python\pythoncore-3.<minor>-64. The newest one.
-    std::string best;
-    int best_minor = -1;
-    std::error_code ec;
-    for (const fs::path& base : {u8(env("LOCALAPPDATA")) / "Programs" / "Python", u8(env("ProgramFiles")),
-                                 u8(env("LOCALAPPDATA")) / "Python"}) {
-        for (const auto& d : fs::directory_iterator(base, ec)) {
-            std::string n = lower(str(d.path().filename()));
-            int minor = 0;
-            bool named = (n.rfind("python3", 0) == 0 && std::sscanf(n.c_str() + 7, "%d", &minor) == 1) ||
-                         (n.rfind("pythoncore-3.", 0) == 0 && std::sscanf(n.c_str() + 13, "%d", &minor) == 1);
-            if (!named) continue;
-            if (minor > best_minor && fs::is_regular_file(d.path() / "python.exe", ec))
-                best = str(d.path() / "python.exe"), best_minor = minor;
-        }
-    }
-    return best;
-}
-
 std::vector<std::string> python_command(const std::string& root) {
     // Never the repository's venv (private\venv): the setup makes it again when it was moved from another folder, and
     // Windows does not let it delete the python.exe it runs on.
     (void)root;
-    if (const char* p = std::getenv("NX_LAUNCHER_PYTHON"); p && *p) return {p};
-    if (std::string py = path_of("py.exe"); !py.empty()) return {py, "-3"};
-    if (std::string py = path_of("python.exe"); !py.empty()) return {py};
-    // Installed without "Add to PATH" (winget's default) and without the py launcher: found where it is.
-    if (std::string py = installed_python(); !py.empty()) return {py};
-    return {};
+    return find_python_now().cmd;
 }
 #endif
 
@@ -805,11 +944,17 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
     const std::string root = repo_root();
     add("launcher.check.scripts", !root.empty(), Status::Error, found, tr("launcher.err.no_repo"));
     // The version the setup will really run with: one too old, or the Store's alias, would stop it at its first step.
-    std::string py = python_version(root);
+    PythonFound py = find_python_now();
     int major = 0, minor = 0;
-    std::sscanf(py.c_str(), "%d.%d", &major, &minor);
-    add("launcher.check.python", major == 3 && minor >= 11, Status::Error, "Python " + py,
-        py.empty() ? missing : trf("launcher.check.python_old", "Python " + py));
+    std::sscanf(py.version.c_str(), "%d.%d", &major, &minor);
+    // Not found: the Pythons that were there but did not answer are named, so a screenshot says why.
+    std::string none = missing;
+    if (!py.tried.empty()) {
+        none += ":";
+        for (const std::string& t : py.tried) none += " " + t + (&t == &py.tried.back() ? "" : ",");
+    }
+    add("launcher.check.python", major == 3 && minor >= 11, Status::Error, "Python " + py.version,
+        py.version.empty() ? none : trf("launcher.check.python_old", "Python " + py.version));
     add("launcher.check.compiler", msvc_tools(), Status::Error, found, missing);
     add("launcher.check.vulkan", vulkan_loader(), Status::Error, found, missing);
     // vcpkg builds the movie decoders from a git clone: without git the setup goes on, the movies are black.

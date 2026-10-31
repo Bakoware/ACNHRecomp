@@ -122,10 +122,10 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir);
 // The package command for what checks found missing (on Windows only those; elsewhere the whole list).
 std::string install_command(const std::vector<Prereq>& checks);
 #if defined(_WIN32)
-// The Python the setup runs with, as a command (program, then arguments): NX_LAUNCHER_PYTHON, the py launcher,
-// python.exe on PATH (not the Store's alias), then one installed off PATH. Empty if none.
+// The Python the setup runs with, as a command (program, then arguments): the first that answers with 3.11 or newer
+// among NX_LAUNCHER_PYTHON, the py launchers and python.exe on PATH (not the Store's alias), the Pythons Windows has
+// registered and the usual install folders. Empty if none answers.
 std::vector<std::string> python_command(const std::string& root);
-std::string installed_python();  // the newest python.org Python installed, wherever PATH is; "" if none
 #endif
 
 // ---- the setup (pipeline.cpp) ---------------------------------------------------------------------------------
