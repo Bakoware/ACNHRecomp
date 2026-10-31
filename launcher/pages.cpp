@@ -1112,9 +1112,13 @@ void page_build() {
     }
     const bool failed = s.finished && !s.cancelled, stopped = s.finished && s.cancelled;
     steps(2);
+    // tools/setup_acnh.py says "network: ..." when it cannot reach the sites it downloads from: what to do, in words.
+    const bool offline = failed && std::any_of(g_log.begin(), g_log.end(),
+                                               [](const std::string& l) { return l.rfind("network:", 0) == 0; });
     if (failed)
         heading(tr("launcher.build.failed_title"),
-                (trf("launcher.build.failed", stage_label(s.stage)) + " " + tr("launcher.build.failed_hint")).c_str());
+                (trf("launcher.build.failed", stage_label(s.stage)) + " " +
+                 tr(offline ? "launcher.build.network" : "launcher.build.failed_hint")).c_str());
     else if (stopped)
         heading(tr("launcher.build.stopped_title"), tr("launcher.build.cancelled"));
     else

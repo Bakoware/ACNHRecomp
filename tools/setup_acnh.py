@@ -21,9 +21,13 @@ import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -72,12 +76,44 @@ def run(cmd, log=None, env=None, cwd=ROOT, check=True):
     return rc
 
 
+_reached = set()
+
+
+def need_net(host):
+    """Fails at once, with one "network:" line the launcher explains (launcher/pages.cpp), when this computer cannot
+    look host up: no connection, a VPN or proxy only the browser uses, a DNS that does not answer. Through a proxy
+    the proxy looks it up, so nothing is checked."""
+    if host in _reached or urllib.request.getproxies().get("https"):
+        return
+    for attempt in range(3):
+        try:
+            socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            _reached.add(host)
+            return
+        except OSError as e:
+            err = e
+            time.sleep(2)
+    fail(f"network: this computer cannot reach {host} ({err}). The setup downloads its tools from pypi.org, "
+         "github.com, codeberg.org and microsoft.com: check the internet connection, turn off (or on) a VPN or "
+         "proxy, or set the DNS to 1.1.1.1 or 8.8.8.8, then choose Try again.")
+
+
 def fetch(url, dest_dir, strip=True):
     """Downloads a .tar.gz / .tar.xz / .zip and extracts it into dest_dir (its single top folder removed if strip)."""
+    need_net(urllib.parse.urlsplit(url).hostname)
     os.makedirs(dest_dir, exist_ok=True)
     tmp = dest_dir + ".download"
-    with urllib.request.urlopen(url) as r, open(tmp, "wb") as f:
-        shutil.copyfileobj(r, f, 1 << 20)
+    for attempt in range(1, 4):  # a connection that drops halfway: the download starts again
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f, 1 << 20)
+            break
+        except (urllib.error.URLError, OSError) as e:
+            if attempt == 3:
+                fail(f"network: the download of {url} failed ({e}). Check the internet connection and choose "
+                     "Try again.")
+            print(f"download interrupted ({e}), trying again", flush=True)
+            time.sleep(5 * attempt)
     if url.endswith(".zip"):
         with zipfile.ZipFile(tmp) as z:
             names = z.namelist()
@@ -174,6 +210,8 @@ def main():
         run([sys.executable, "-m", "venv", os.path.join(P, "venv")])
     if subprocess.call([py, "-c", "import capstone, lz4, zstandard, fontTools, cmake, ninja"],
                        stderr=subprocess.DEVNULL):
+        need_net("pypi.org")
+        need_net("files.pythonhosted.org")
         run([py, "-m", "pip", "install", "-q", "capstone", "lz4", "zstandard", "fonttools", "cmake", "ninja", "unicorn"])
     bindir = os.path.dirname(py)
     cmake = os.path.join(bindir, "cmake.exe" if WIN else "cmake")
@@ -202,6 +240,7 @@ def main():
         if not os.path.exists(os.path.join(MOVIE_LIBS, "lib", "vpx.lib")):
             if not os.path.exists(os.path.join(vcpkg, "vcpkg.exe")) and shutil.which("git"):
                 if not os.path.isdir(vcpkg):
+                    need_net("github.com")
                     run(["git", "clone", "-q", "--depth", "1", "https://github.com/microsoft/vcpkg.git", vcpkg])
                 run([os.path.join(vcpkg, "bootstrap-vcpkg.bat"), "-disableMetrics"], log=os.path.join(logs, "vcpkg.log"))
             if os.path.exists(os.path.join(vcpkg, "vcpkg.exe")):
@@ -236,6 +275,7 @@ def main():
     env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
     harness = os.path.join(P, "build", "spirv_harness", "bin", "Release", "net10.0", "spirv_harness.dll")
     if not os.path.exists(harness) or force("harness"):
+        need_net("api.nuget.org")  # the build restores its packages from NuGet
         run([dotnet, "build", "tools/maxwell/spirv_harness/SpirvHarness.csproj", "-c", "Release", "-m:4"],
             log=os.path.join(logs, "harness.log"), env=env)
     imp_build = os.path.join(P, "build", "importer")
