@@ -962,7 +962,7 @@ void page_install() {
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
-    std::string cmd = install_command();
+    std::string cmd = install_command(g_prereqs);
     if (missing_tools && !cmd.empty()) {
         ImGui::Dummy(ImVec2(0, S(2)));
         ImGui::TextWrapped("%s", tr("launcher.install.hint"));

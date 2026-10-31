@@ -119,7 +119,14 @@ struct Prereq {
     std::string detail;  // translated
 };
 std::vector<Prereq> check_prerequisites(const std::string& install_dir);
-std::string install_command();  // the package command for this OS ("" on Windows)
+// The package command for what checks found missing (on Windows only those; elsewhere the whole list).
+std::string install_command(const std::vector<Prereq>& checks);
+#if defined(_WIN32)
+// The Python the setup runs with, as a command (program, then arguments): NX_LAUNCHER_PYTHON, the repository's venv,
+// the py launcher, python.exe on PATH (not the Store's alias), then one installed off PATH. Empty if none.
+std::vector<std::string> python_command(const std::string& root);
+std::string installed_python();  // the newest python.org Python installed, wherever PATH is; "" if none
+#endif
 
 // ---- the setup (pipeline.cpp) ---------------------------------------------------------------------------------
 

@@ -149,16 +149,11 @@ std::wstring quote(const std::wstring& a) {
     return q + L"\"";
 }
 
-// A Python 3 to run the setup with: NX_LAUNCHER_PYTHON, the repository's venv, the py launcher, python on PATH.
+// A Python 3 to run the setup with: the one the install page checked (files.cpp, python_command).
 std::vector<std::wstring> find_python(const std::string& root) {
-    if (const char* p = std::getenv("NX_LAUNCHER_PYTHON"); p && *p) return {wide(p)};
-    std::error_code ec;
-    std::string venv = root + "/private/venv/Scripts/python.exe";
-    if (std::filesystem::exists(utf8_path(venv), ec)) return {wide(venv)};
-    wchar_t found[MAX_PATH];
-    if (SearchPathW(nullptr, L"py.exe", nullptr, MAX_PATH, found, nullptr)) return {found, L"-3"};
-    if (SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr)) return {found};
-    return {};
+    std::vector<std::wstring> r;
+    for (const std::string& a : python_command(root)) r.push_back(wide(a));
+    return r;
 }
 
 void reader(HANDLE pipe, FILE* log) {

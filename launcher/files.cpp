@@ -590,7 +590,9 @@ const char* find_build(const std::string& folder, Build& out) {
 
 namespace {
 
-bool in_path(const char* tool) {
+// The first folder of PATH holding tool, "" if none. Microsoft Store's python.exe alias (WindowsApps) is not one: it
+// has no Python behind it, and started it opens the Store. (The py.exe there is the Python install manager's: real.)
+std::string path_of(const char* tool) {
     std::string path = env("PATH");
 #if defined(_WIN32)
     const char sep = ';';
@@ -600,10 +602,15 @@ bool in_path(const char* tool) {
     std::stringstream ss(path);
     std::string dir;
     std::error_code ec;
-    while (std::getline(ss, dir, sep))
-        if (!dir.empty() && fs::is_regular_file(u8(dir) / tool, ec)) return true;
-    return false;
+    while (std::getline(ss, dir, sep)) {
+        if (dir.empty()) continue;
+        if (lower(tool).rfind("python", 0) == 0 && lower(dir).find("\\windowsapps") != std::string::npos) continue;
+        if (fs::is_regular_file(u8(dir) / tool, ec)) return str(u8(dir) / tool);
+    }
+    return "";
 }
+
+bool in_path(const char* tool) { return !path_of(tool).empty(); }
 
 bool sdl3_dev_files() {
     std::vector<fs::path> c = {"/usr/lib/cmake/SDL3", "/usr/lib64/cmake/SDL3", "/usr/local/lib/cmake/SDL3",
@@ -639,6 +646,47 @@ bool msvc_tools() {
     return !trim(out).empty();
 }
 
+// PATH as Windows has it now (the machine's and the user's, from the registry): a program installed while the launcher
+// is open (winget) is found by "Check again" and by the setup it starts, without restarting the launcher. Entries only
+// this process has (from whoever started it) stay, after them.
+void refresh_path() {
+    auto read = [](HKEY root, const wchar_t* key) -> std::wstring {
+        const DWORD flags = RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND;
+        DWORD type = 0, size = 0;
+        if (RegGetValueW(root, key, L"Path", flags, &type, nullptr, &size) != ERROR_SUCCESS || size < 2) return L"";
+        std::wstring v(size / sizeof(wchar_t), L'\0');
+        if (RegGetValueW(root, key, L"Path", flags, &type, v.data(), &size) != ERROR_SUCCESS) return L"";
+        v.resize(wcslen(v.c_str()));
+        if (type == REG_EXPAND_SZ) {
+            std::wstring out(32768, L'\0');
+            DWORD n = ExpandEnvironmentStringsW(v.c_str(), out.data(), DWORD(out.size()));
+            if (n && n <= out.size()) v = out.c_str();
+        }
+        return v;
+    };
+    std::wstring merged = read(HKEY_LOCAL_MACHINE, LR"(SYSTEM\CurrentControlSet\Control\Session Manager\Environment)");
+    std::wstring user = read(HKEY_CURRENT_USER, L"Environment");
+    if (merged.empty() && user.empty()) return;
+    if (!user.empty()) merged += (merged.empty() ? L"" : L";") + user;
+    auto key = [](std::wstring s) {
+        while (!s.empty() && (s.back() == L'\\' || s.back() == L'/')) s.pop_back();
+        for (wchar_t& c : s) c = wchar_t(towlower(c));
+        return s;
+    };
+    std::vector<std::wstring> have;
+    {
+        std::wstringstream ss(merged);
+        for (std::wstring e; std::getline(ss, e, L';');)
+            if (!e.empty()) have.push_back(key(e));
+    }
+    const wchar_t* cur = _wgetenv(L"PATH");
+    std::wstringstream ss(std::wstring(cur ? cur : L""));
+    for (std::wstring e; std::getline(ss, e, L';');)
+        if (!e.empty() && std::find(have.begin(), have.end(), key(e)) == have.end())
+            merged += L";" + e, have.push_back(key(e));
+    _wputenv_s(L"PATH", merged.c_str());
+}
+
 // The output of a command (its first line), "" if it could not run.
 std::string first_line(const std::string& cmd) {
     FILE* p = _popen(("\"" + cmd + " 2>nul\"").c_str(), "r");
@@ -649,19 +697,14 @@ std::string first_line(const std::string& cmd) {
     return trim(out);
 }
 
-// The version of the Python the setup will run with (launcher/pipeline.cpp, find_python): "3.13", or "" when there is
-// none or it does not start. Microsoft Store's python.exe alias is on PATH without Python behind it: it prints nothing.
+// The version of the Python the setup will run with (python_command, the one launcher/pipeline.cpp starts): "3.13",
+// or "" when there is none or it does not start.
 std::string python_version(const std::string& root) {
-    const std::string ask = " -c \"import sys; print('%d.%d' % sys.version_info[:2])\"";
-    std::error_code ec;
-    fs::path venv = u8(root) / "private" / "venv" / "Scripts" / "python.exe";
-    if (!root.empty() && fs::is_regular_file(venv, ec)) return first_line("\"" + str(venv) + "\"" + ask);
-    if (in_path("py.exe")) {
-        std::string v = first_line("py -3" + ask);
-        if (!v.empty()) return v;
-    }
-    if (in_path("python.exe")) return first_line("python" + ask);
-    return "";
+    std::vector<std::string> cmd = python_command(root);
+    if (cmd.empty()) return "";
+    std::string line = "\"" + cmd[0] + "\"";
+    for (size_t i = 1; i < cmd.size(); i++) line += " " + cmd[i];
+    return first_line(line + " -c \"import sys; print('%d.%d' % sys.version_info[:2])\"");
 }
 
 // A Windows proxy set for the browser: the downloads go through it and it looks the sites up, not this computer.
@@ -713,6 +756,42 @@ bool vulkan_loader() {
 
 }  // namespace
 
+#if defined(_WIN32)
+std::string installed_python() {
+    // python.org's installer puts each version in Python3<minor>: per user under LOCALAPPDATA (the default, and what
+    // winget installs), for everyone under Program Files. The Python install manager (3.14 on) uses
+    // LOCALAPPDATA\Python\pythoncore-3.<minor>-64. The newest one.
+    std::string best;
+    int best_minor = -1;
+    std::error_code ec;
+    for (const fs::path& base : {u8(env("LOCALAPPDATA")) / "Programs" / "Python", u8(env("ProgramFiles")),
+                                 u8(env("LOCALAPPDATA")) / "Python"}) {
+        for (const auto& d : fs::directory_iterator(base, ec)) {
+            std::string n = lower(str(d.path().filename()));
+            int minor = 0;
+            bool named = (n.rfind("python3", 0) == 0 && std::sscanf(n.c_str() + 7, "%d", &minor) == 1) ||
+                         (n.rfind("pythoncore-3.", 0) == 0 && std::sscanf(n.c_str() + 13, "%d", &minor) == 1);
+            if (!named) continue;
+            if (minor > best_minor && fs::is_regular_file(d.path() / "python.exe", ec))
+                best = str(d.path() / "python.exe"), best_minor = minor;
+        }
+    }
+    return best;
+}
+
+std::vector<std::string> python_command(const std::string& root) {
+    if (const char* p = std::getenv("NX_LAUNCHER_PYTHON"); p && *p) return {p};
+    std::error_code ec;
+    fs::path venv = u8(root) / "private" / "venv" / "Scripts" / "python.exe";
+    if (!root.empty() && fs::is_regular_file(venv, ec)) return {str(venv)};
+    if (std::string py = path_of("py.exe"); !py.empty()) return {py, "-3"};
+    if (std::string py = path_of("python.exe"); !py.empty()) return {py};
+    // Installed without "Add to PATH" (winget's default) and without the py launcher: found where it is.
+    if (std::string py = installed_python(); !py.empty()) return {py};
+    return {};
+}
+#endif
+
 std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
     std::vector<Prereq> r;
     auto add = [&](const char* label, bool good, Status bad, std::string detail_good, std::string detail_bad) {
@@ -722,6 +801,7 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
 #if defined(_WIN32)
     // tools/setup_acnh.py fetches LLVM (clang-cl), SDL3, CMake and Ninja itself: Python, Visual Studio's C++ tools and
     // a Vulkan driver are what it needs from the system.
+    refresh_path();
     const std::string root = repo_root();
     add("launcher.check.scripts", !root.empty(), Status::Error, found, tr("launcher.err.no_repo"));
     // The version the setup will really run with: one too old, or the Store's alias, would stop it at its first step.
@@ -779,11 +859,23 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
     return r;
 }
 
-std::string install_command() {
+std::string install_command(const std::vector<Prereq>& checks) {
 #if defined(_WIN32)
-    return "winget install Python.Python.3.13\n"
-           "winget install Microsoft.VisualStudio.2022.BuildTools --override "
-           "\"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"";
+    // Only what is missing: a winget install of something already there fails (Visual Studio's installer exits with
+    // 1), and looks as if it still had to be installed.
+    auto bad = [&](const char* label) {
+        for (const Prereq& p : checks)
+            if (std::string(p.label) == label) return p.status != Status::Ok;
+        return false;
+    };
+    std::string cmd;
+    if (bad("launcher.check.python")) cmd += "winget install Python.Python.3.13\n";
+    if (bad("launcher.check.movie")) cmd += "winget install Git.Git\n";
+    if (bad("launcher.check.compiler"))
+        cmd += "winget install Microsoft.VisualStudio.2022.BuildTools --override "
+               "\"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"\n";
+    if (!cmd.empty()) cmd.pop_back();
+    return cmd;
 #elif defined(__APPLE__)
     return "xcode-select --install\nbrew install llvm cmake ninja sdl3 molten-vk vulkan-loader libvpx libvorbis";
 #else
