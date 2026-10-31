@@ -34,7 +34,22 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 P = os.path.join(ROOT, "private")
 T = os.path.join(P, "third_party")
-MOVIE_LIBS = os.path.join(T, "vcpkg", "installed", "x64-windows-static-md")  # libvpx, libvorbis (vcpkg)
+
+
+def vcpkg_home():
+    """Where vcpkg goes: private\\third_party\\vcpkg, unless that path has a space ("...\\Emulators and
+    Decomps\\ACNHRecomp"): vcpkg's ports (pkgconf's meson, libvpx's MSYS configure) do not build there, so it then
+    goes in a folder without any (LOCALAPPDATA, else the system drive's root)."""
+    own = os.path.join(T, "vcpkg")
+    if " " not in own or os.path.exists(os.path.join(own, "installed", "x64-windows-static-md", "lib", "vpx.lib")):
+        return own
+    for base in (os.environ.get("LOCALAPPDATA", ""), os.environ.get("SystemDrive", "C:") + "\\"):
+        if base and " " not in base:
+            return os.path.join(base, "ACNHRecomp-tools", "vcpkg")
+    return own
+
+
+MOVIE_LIBS = os.path.join(vcpkg_home(), "installed", "x64-windows-static-md")  # libvpx, libvorbis (vcpkg)
 WIN = os.name == "nt"
 MAC = sys.platform == "darwin"
 
@@ -317,18 +332,31 @@ def main():
         cc = ["-DCMAKE_C_COMPILER=clang-cl", "-DCMAKE_CXX_COMPILER=clang-cl"]
         # libvpx and libvorbis decode the game's movies (runtime/src/hle_movie.cpp; the flight to the island is a VP9
         # movie): static libraries built by vcpkg the first time, a few minutes. Without git the movies are black.
-        vcpkg = os.path.join(T, "vcpkg")
+        vcpkg = vcpkg_home()
         if not os.path.exists(os.path.join(MOVIE_LIBS, "lib", "vpx.lib")):
             if not os.path.exists(os.path.join(vcpkg, "vcpkg.exe")) and shutil.which("git"):
                 if not os.path.isdir(vcpkg):
                     need_net("github.com")
-                    run(["git", "clone", "-q", "--depth", "1", "https://github.com/microsoft/vcpkg.git", vcpkg])
-                run([os.path.join(vcpkg, "bootstrap-vcpkg.bat"), "-disableMetrics"], log=os.path.join(logs, "vcpkg.log"))
-            if os.path.exists(os.path.join(vcpkg, "vcpkg.exe")):
+                    run(["git", "clone", "-q", "--depth", "1", "https://github.com/microsoft/vcpkg.git", vcpkg],
+                        check=False)
+                if os.path.exists(os.path.join(vcpkg, "bootstrap-vcpkg.bat")):
+                    run([os.path.join(vcpkg, "bootstrap-vcpkg.bat"), "-disableMetrics"],
+                        log=os.path.join(logs, "vcpkg.log"), check=False)
+            # The movies are not worth stopping the setup for: a decoder that does not build leaves them black, noted
+            # so later runs do not spend minutes on it again (FORCE=movies tries again).
+            failed = os.path.join(T, "movie-libs.failed")
+            if os.path.exists(failed) and not force("movies"):
+                print("libvpx did not build before: the game's movies will be black (FORCE=movies to try again)",
+                      flush=True)
+            elif os.path.exists(os.path.join(vcpkg, "vcpkg.exe")):
                 print("building libvpx and libvorbis (the game's movies; a few minutes, once)", flush=True)
-                run([os.path.join(vcpkg, "vcpkg.exe"), "install", "libvpx:x64-windows-static-md",
-                     "libvorbis:x64-windows-static-md", "--disable-metrics"], log=os.path.join(logs, "vcpkg.log"),
-                    env=env, cwd=vcpkg)
+                rc = run([os.path.join(vcpkg, "vcpkg.exe"), "install", "libvpx:x64-windows-static-md",
+                          "libvorbis:x64-windows-static-md", "--disable-metrics"],
+                         log=os.path.join(logs, "vcpkg.log"), env=env, cwd=vcpkg, check=False)
+                if rc:
+                    open(failed, "w").close()
+                    print(f"libvpx did not build (log: {os.path.join(logs, 'vcpkg.log')}): the setup goes on, the "
+                          "game's movies will be black", flush=True)
             else:
                 print("git not found: no libvpx, the game's movies will be black", flush=True)
     else:
