@@ -144,6 +144,23 @@ def fetch(url, dest_dir, strip=True):
     os.remove(tmp)
 
 
+def same_source(build_dir, src):
+    """A CMake build folder made from another copy of the sources (a newer release unpacked elsewhere, the private
+    folder moved along) is configured again instead of CMake refusing it: its cache names the old folder, which may be gone."""
+    cache = os.path.join(build_dir, "CMakeCache.txt")
+    if not os.path.exists(cache):
+        return
+    with open(cache, encoding="utf-8", errors="replace") as f:
+        old = next((l.split("=", 1)[1].strip() for l in f if l.startswith("CMAKE_HOME_DIRECTORY:")), "")
+    if old and os.path.normcase(os.path.abspath(old)) != os.path.normcase(os.path.abspath(src)):
+        print(f"the sources moved ({old} -> {src}): configuring {build_dir} again", flush=True)
+        os.remove(cache)
+        shutil.rmtree(os.path.join(build_dir, "CMakeFiles"), ignore_errors=True)
+        for f in ("build.ninja", "rules.ninja"):
+            if os.path.exists(os.path.join(build_dir, f)):
+                os.remove(os.path.join(build_dir, f))
+
+
 def free_mb():
     if WIN:
         import ctypes
@@ -214,13 +231,26 @@ def main():
                      "api.nuget.org"):
             need_net(host)
     py = os.path.join(P, "venv", "Scripts" if WIN else "bin", "python.exe" if WIN else "python")
+    # A venv's tools (cmake, ninja, pip) start the Python of the folder it was made in: moved with the private folder (a
+    # newer release unpacked elsewhere) they point at the old one. Made again here: its packages are a small download.
+    venv_root = os.path.join(P, "venv", "acnhrecomp_root.txt")
+    if os.path.exists(py):
+        made_in = open(venv_root, encoding="utf-8").read().strip() if os.path.exists(venv_root) else ""
+        runs = subprocess.call([os.path.join(os.path.dirname(py), "cmake.exe" if WIN else "cmake"), "--version"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0 if made_in != ROOT else True
+        if not runs:
+            print("the Python environment was made in another folder: making it again here", flush=True)
+            shutil.rmtree(os.path.join(P, "venv"), ignore_errors=True)
     if not os.path.exists(py):
+        need_net("pypi.org")
         run([sys.executable, "-m", "venv", os.path.join(P, "venv")])
     if subprocess.call([py, "-c", "import capstone, lz4, zstandard, fontTools, cmake, ninja"],
                        stderr=subprocess.DEVNULL):
         need_net("pypi.org")
         need_net("files.pythonhosted.org")
         run([py, "-m", "pip", "install", "-q", "capstone", "lz4", "zstandard", "fonttools", "cmake", "ninja", "unicorn"])
+    with open(venv_root, "w", encoding="utf-8") as f:
+        f.write(ROOT)
     bindir = os.path.dirname(py)
     cmake = os.path.join(bindir, "cmake.exe" if WIN else "cmake")
     ninja = os.path.join(bindir, "ninja.exe" if WIN else "ninja")
@@ -287,6 +317,7 @@ def main():
         run([dotnet, "build", "tools/maxwell/spirv_harness/SpirvHarness.csproj", "-c", "Release", "-m:4"],
             log=os.path.join(logs, "harness.log"), env=env)
     imp_build = os.path.join(P, "build", "importer")
+    same_source(imp_build, os.path.join(ROOT, "tools", "importer"))
     if not os.path.exists(os.path.join(imp_build, "build.ninja")):
         run([cmake, "-S", "tools/importer", "-B", imp_build, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}",
              "-DCMAKE_BUILD_TYPE=Release"] + cc, log=os.path.join(logs, "importer_cmake.log"), env=env)
@@ -432,6 +463,7 @@ def main():
         brew = subprocess.run(["brew", "--prefix"], capture_output=True, text=True).stdout.strip() or "/opt/homebrew"
         extra.append(f"-DCMAKE_PREFIX_PATH={brew}")
     build = os.path.join(G, "build")
+    same_source(build, ROOT)
     run([cmake, "-S", ".", "-B", build, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-DNX_GAME=acnh",
          "-DCMAKE_BUILD_TYPE=Release", f"-DNX_VULKAN_INCLUDE={os.path.join(vkh, 'include')}"] + cc + extra,
         log=os.path.join(logs, "cmake.log"), env=env)

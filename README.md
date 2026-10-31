@@ -94,6 +94,14 @@ The island is saved in `<data folder>\user\device_save\`. The settings screen's 
 Checkpoint backup, a yuzu or Ryujinx save or another ACNHRecomp folder, backs up the current save before every
 import, and exports in the layout JKSV and Checkpoint restore on a console.
 
+## Updating
+
+Unpack a newer release over the old `ACNHRecomp` folder, replacing its files. The tools in `private\` stay (nothing
+is downloaded again), and choosing to build again in the launcher compiles only what changed. The island and the
+built game are in the data folder, outside this one: an update never touches them. Unpacked somewhere else, the
+setup still works (it notices the moved sources and configures again) but downloads the tools again and compiles
+everything, unless `private\` is moved along.
+
 ## Documentation
 
 - [docs/VERSIONS.md](docs/VERSIONS.md): the versions, their build ids and how to port the fixes to another one.
