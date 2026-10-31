@@ -40,6 +40,7 @@ MAC = sys.platform == "darwin"
 
 VK_HEADERS = "1.4.357"
 LLVM = "23.1.3"  # Windows only: clang-cl and lld-link (Linux and macOS use the system's clang)
+LLVM_MIN = 18  # an LLVM already installed on Windows is used when it is at least this one (C++20 is all it needs)
 SDL3 = "3.4.16"  # Windows only: SDL's VC development package (Linux and macOS: the system's SDL3)
 IMGUI = "1.91.9"
 RYUBING = "a82350bb77"
@@ -106,7 +107,20 @@ def fetch(url, dest_dir, strip=True):
     for attempt in range(1, 4):  # a connection that drops halfway: the download starts again
         try:
             with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
-                shutil.copyfileobj(r, f, 1 << 20)
+                # How far it is, every 5 %: a long download that says nothing looks stuck (the launcher shows the
+                # last line under its step).
+                total, done, shown = int(r.headers.get("Content-Length") or 0), 0, -1
+                name = url.rsplit("/", 1)[-1]
+                while chunk := r.read(1 << 20):
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total >= 20 << 20 and done * 20 // total > shown:
+                        shown = done * 20 // total
+                        print(f"downloading {name}: {done * 100 // total}% ({done >> 20} of {total >> 20} MB)",
+                              flush=True)
+                    elif not total and done // (50 << 20) > max(shown, 0):  # a size the server does not say: every 50 MB
+                        shown = done // (50 << 20)
+                        print(f"downloading {name}: {done >> 20} MB", flush=True)
             break
         except (urllib.error.URLError, OSError) as e:
             if attempt == 3:
@@ -114,6 +128,8 @@ def fetch(url, dest_dir, strip=True):
                      "Try again.")
             print(f"download interrupted ({e}), trying again", flush=True)
             time.sleep(5 * attempt)
+    if os.path.getsize(tmp) >= 20 << 20:
+        print(f"extracting {url.rsplit('/', 1)[-1]}", flush=True)
     if url.endswith(".zip"):
         with zipfile.ZipFile(tmp) as z:
             names = z.namelist()
@@ -180,6 +196,30 @@ def free_mb():
         return next(int(l.split()[1]) for l in f if l.startswith("MemAvailable:")) // 1024
 
 
+def system_llvm():
+    """The bin folder of an LLVM installed on this computer (on PATH, or LLVM's installer's folder) with clang-cl and
+    lld-link, at least LLVM_MIN; "" if there is none."""
+    dirs = [os.path.dirname(shutil.which("clang-cl") or "")]
+    dirs += [os.path.join(os.environ.get(v, ""), "LLVM", "bin") for v in ("ProgramFiles", "ProgramW6432")]
+    for d in dirs:
+        if not d or not os.path.exists(os.path.join(d, "clang-cl.exe")) or not os.path.exists(os.path.join(d, "lld-link.exe")):
+            continue
+        out = subprocess.run([os.path.join(d, "clang-cl.exe"), "--version"], capture_output=True, text=True).stdout
+        m = re.search(r"clang version (\d+)", out)
+        if m and int(m.group(1)) >= LLVM_MIN:
+            return d
+    return ""
+
+
+def llvm_bin():
+    """clang-cl's folder: the copy the setup downloaded when it is there (a build made with it stays as it is), else an
+    LLVM already installed, else where the download goes."""
+    own = os.path.join(T, f"llvm-{LLVM}", "bin")
+    if os.path.exists(os.path.join(own, "clang-cl.exe")):
+        return own
+    return system_llvm() or own
+
+
 def msvc_env():
     """The environment of a "x64 Native Tools" prompt (Visual Studio's vcvars64.bat), LLVM first on PATH."""
     vswhere = os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe")
@@ -198,7 +238,7 @@ def msvc_env():
     # Windows spells it "Path" (from Explorer and the launcher), shells often "PATH": one key, whatever the case.
     paths = [env.pop(k) for k in [k for k in env if k.upper() == "PATH"]]
     path = paths[0] if paths else ""
-    env["PATH"] = os.pathsep.join([os.path.join(T, f"llvm-{LLVM}", "bin"), os.path.join(P, "venv", "Scripts"), path])
+    env["PATH"] = os.pathsep.join([llvm_bin(), os.path.join(P, "venv", "Scripts"), path])
     return env
 
 
@@ -263,8 +303,11 @@ def main():
         fetch(f"https://codeberg.org/Software_arch/Ryubing/archive/{RYUBING}.tar.gz", os.path.join(T, "ryubing"))
     if WIN:
         llvm = os.path.join(T, f"llvm-{LLVM}")
-        if not os.path.exists(os.path.join(llvm, "bin", "clang-cl.exe")):
-            print(f"downloading LLVM {LLVM} (about 860 MB)", flush=True)
+        if os.path.exists(os.path.join(llvm_bin(), "clang-cl.exe")) and llvm_bin() != os.path.join(llvm, "bin"):
+            print(f"using the LLVM installed in {llvm_bin()}", flush=True)
+        elif not os.path.exists(os.path.join(llvm, "bin", "clang-cl.exe")):
+            print(f"downloading LLVM {LLVM} (about 860 MB; an LLVM {LLVM_MIN} or newer already installed is used "
+                  "instead)", flush=True)
             fetch(f"https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM}/"
                   f"clang+llvm-{LLVM}-x86_64-pc-windows-msvc.tar.xz", llvm)
         sdl = os.path.join(T, f"SDL3-{SDL3}")
