@@ -609,6 +609,8 @@ void keyboard_text_entry(bool open) {
 
 bool keyboard_state_known() { return g_typing_known; }
 
+bool keyboard_reads_text() { return g_keycode_ms != 0; }
+
 void set_mouse_touch(bool down, float u, float v) {
     std::lock_guard lk(g_touch_lock);
     float x = (u - g_box[0]) / g_box[2], y = (v - g_box[1]) / g_box[3];

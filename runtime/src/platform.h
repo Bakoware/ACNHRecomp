@@ -88,6 +88,9 @@ bool keyboard_typing();
 // from then on, not the GetKeyCode guess (the game turns keys into characters whether its text entry is up or not).
 void keyboard_text_entry(bool open);
 bool keyboard_state_known();
+// The game has turned a key into a character (nn::hid::GetKeyCode) at least once: until then no key types (ACNH
+// 1.0.0 never does), so none waits before driving the pad.
+bool keyboard_reads_text();
 // Keys that type a character (letters, digits, space, punctuation): the ones whose press tells typing from playing.
 inline bool key_types(int usage) { return (usage >= 4 && usage <= 39) || (usage >= 44 && usage <= 56); }
 // Touch controls to draw over the picture (touch_layout.cpp): circles at x, y (0..1

@@ -14,3 +14,4 @@
 31c3fa8  # guiTouchManager::update (main+31c3b60) before its hit tests, x24 = the manager (v3_0_3.cpp; 3.0.2 main+31c3f98)
 3c48c70  # focus manager input entry (v3_0_3.cpp; 3.0.2 main+3c48c60)
 3c4b20c  # button handler input entry (v3_0_3.cpp; 3.0.2 main+3c4b1fc)
+3202ac0  # software keyboard key handling (main+3202ac0): its text entry open or not decides typing (v3_0_3.cpp; 2.0.7 main+204ff60)

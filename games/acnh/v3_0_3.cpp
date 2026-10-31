@@ -5,6 +5,8 @@
 // (native60.cpp, runtime/src/nvn/nvn_ultrawide.cpp); Pane::Calculate and the Phive guard are at 3.0.2's addresses.
 #include <nx/runtime.h>
 
+#include "platform.h"
+
 namespace nx {
 
 void acnh_gui_touch_update(uint64_t manager);  // games/acnh/pointer.cpp
@@ -22,10 +24,19 @@ void focus_input(CPU& c) { acnh_focus_input(c, 0x3c48b78); }
 // A button handler's input (main+3c4b20c): a click while a message waits.
 void button_input(CPU& c) { acnh_button_input(c, kPageTurner303); }
 
+// The software keyboard's key handling (main+3202ac0, x0 the manager; 2.0.7's main+204ff60, called from the same two
+// places): idle in the states +0x38, +0xe0, +0x230 or with +0x16431 set (2.0.7's +0x163e9), otherwise its text
+// entry is open and the PC keyboard types. Known, the keys that type drive the pad at once (platform_sdl.cpp).
+void text_entry(CPU& c) {
+    uint64_t m = c.x[0], st = ld<uint64_t>(m + 0x20);
+    plat::keyboard_text_entry(st && st != m + 0x230 && st != m + 0x38 && st != m + 0xe0 && !ld<uint8_t>(m + 0x16431));
+}
+
 }  // namespace
 
 NX_HOOK(0x31c3fa8, gui_touch);     // guiTouchManager::update, before its hit tests
 NX_HOOK(0x3c48c70, focus_input);   // focus manager input: a click on a list item
 NX_HOOK(0x3c4b20c, button_input);  // button handler input: a click while a message waits
+NX_HOOK(0x3202ac0, text_entry);    // the software keyboard's key handling: is its text entry open
 
 }  // namespace nx

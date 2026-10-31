@@ -254,6 +254,8 @@ static void sample_input() {
     // The keys also go to the game as a USB keyboard (hle_hid.cpp). While its text entry takes them, they type and
     // only the arrows, Enter and Backspace stay on the pad (cursor, confirm, delete); otherwise a key that types
     // drives the pad once held kTypeWaitMs, so the first letter typed in the text entry does not also press a button.
+    // That wait is only for a game that types but cannot say when its text entry is open: one that says so
+    // (keyboard_state_known, games/acnh/v2_0_7.cpp, v3_0_3.cpp) or never types has the keys at once.
     // Space (A) presses at once: waiting made casting a line or hooking a fish late, and a text entry rarely starts
     // with a space.
     constexpr uint64_t kTypeWaitMs = 120;
@@ -282,7 +284,8 @@ static void sample_input() {
         auto key = [&](int i) {
             int sc = opt.keys[i];
             return k[sc] && (sc == SDL_SCANCODE_SPACE || !nx::plat::key_types(sc) ||
-                             nx::plat::keyboard_state_known() || now - down_since[sc] >= kTypeWaitMs);
+                             nx::plat::keyboard_state_known() || !nx::plat::keyboard_reads_text() ||
+                             now - down_since[sc] >= kTypeWaitMs);
         };
         if (key(2)) p.lx = -kStickMax;
         if (key(3)) p.lx = kStickMax;
