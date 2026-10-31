@@ -956,7 +956,8 @@ void page_install() {
         ImGui::PopStyleColor();
         ImGui::EndGroup();
         std::string l = p.label;
-        if (p.status != Status::Ok && l != "launcher.check.disk" && l != "launcher.check.ram" && l != "launcher.check.scripts")
+        if (p.status != Status::Ok && l != "launcher.check.disk" && l != "launcher.check.ram" && l != "launcher.check.scripts" &&
+            l != "launcher.check.internet")
             missing_tools = true;
     }
     ImGui::EndChild();

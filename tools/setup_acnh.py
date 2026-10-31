@@ -205,6 +205,14 @@ def main():
 
     # ---- tools --------------------------------------------------------------------------------------------------
     say("tools")
+    if sys.version_info < (3, 11):
+        fail(f"missing: Python 3.11 or newer (this is {platform.python_version()}): winget install Python.Python.3.13")
+    # Every site the downloads below need, looked up before the first one: a missing connection stops the setup now,
+    # not after pip or an 860 MB download (each is looked up once, so the checks further down cost nothing).
+    if not os.path.exists(os.path.join(P, "build", "spirv_harness")):
+        for host in ("pypi.org", "files.pythonhosted.org", "github.com", "codeberg.org", "builds.dotnet.microsoft.com",
+                     "api.nuget.org"):
+            need_net(host)
     py = os.path.join(P, "venv", "Scripts" if WIN else "bin", "python.exe" if WIN else "python")
     if not os.path.exists(py):
         run([sys.executable, "-m", "venv", os.path.join(P, "venv")])

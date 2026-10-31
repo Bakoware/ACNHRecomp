@@ -24,6 +24,9 @@ add_executable(acnhrecomp_launcher WIN32
     ${NX_LAUNCHER_IMGUI}/backends/imgui_impl_sdlrenderer3.cpp)
 target_include_directories(acnhrecomp_launcher PRIVATE launcher runtime/src ${NX_LAUNCHER_IMGUI})
 target_link_libraries(acnhrecomp_launcher PRIVATE SDL3::SDL3 Threads::Threads)
+if(WIN32)
+    target_link_libraries(acnhrecomp_launcher PRIVATE ws2_32)  # the internet check (files.cpp)
+endif()
 execute_process(COMMAND git describe --always --dirty WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
                 OUTPUT_VARIABLE NX_LAUNCHER_DESCRIBE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT NX_LAUNCHER_DESCRIBE)

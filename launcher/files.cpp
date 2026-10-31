@@ -11,7 +11,26 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <sstream>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#undef near  // windows.h's 16-bit leftovers: "near" names a list of paths here
+#undef far
+#else
+#include <netdb.h>
+#include <sys/socket.h>
+#endif
 
 #include "ui/i18n.h"
 
@@ -619,7 +638,72 @@ bool msvc_tools() {
     _pclose(p);
     return !trim(out).empty();
 }
+
+// The output of a command (its first line), "" if it could not run.
+std::string first_line(const std::string& cmd) {
+    FILE* p = _popen(("\"" + cmd + " 2>nul\"").c_str(), "r");
+    if (!p) return "";
+    char buf[256];
+    std::string out = std::fgets(buf, sizeof buf, p) ? buf : "";
+    _pclose(p);
+    return trim(out);
+}
+
+// The version of the Python the setup will run with (launcher/pipeline.cpp, find_python): "3.13", or "" when there is
+// none or it does not start. Microsoft Store's python.exe alias is on PATH without Python behind it: it prints nothing.
+std::string python_version(const std::string& root) {
+    const std::string ask = " -c \"import sys; print('%d.%d' % sys.version_info[:2])\"";
+    std::error_code ec;
+    fs::path venv = u8(root) / "private" / "venv" / "Scripts" / "python.exe";
+    if (!root.empty() && fs::is_regular_file(venv, ec)) return first_line("\"" + str(venv) + "\"" + ask);
+    if (in_path("py.exe")) {
+        std::string v = first_line("py -3" + ask);
+        if (!v.empty()) return v;
+    }
+    if (in_path("python.exe")) return first_line("python" + ask);
+    return "";
+}
+
+// A Windows proxy set for the browser: the downloads go through it and it looks the sites up, not this computer.
+bool system_proxy() {
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, LR"(Software\Microsoft\Windows\CurrentVersion\Internet Settings)", 0,
+                      KEY_READ, &k) != ERROR_SUCCESS)
+        return false;
+    DWORD on = 0, size = sizeof on;
+    bool r = RegQueryValueExW(k, L"ProxyEnable", nullptr, nullptr, reinterpret_cast<BYTE*>(&on), &size) == ERROR_SUCCESS && on;
+    RegCloseKey(k);
+    return r;
+}
 #endif
+
+// The sites tools/setup_acnh.py downloads from, looked up all at once: the first one this computer cannot find, ""
+// when it finds them all (or a proxy looks them up).
+std::string unreachable_site() {
+    static const char* const sites[] = {"pypi.org", "files.pythonhosted.org", "github.com", "codeberg.org",
+                                        "builds.dotnet.microsoft.com", "api.nuget.org"};
+#if defined(_WIN32)
+    if (system_proxy() || !env("HTTPS_PROXY").empty() || !env("https_proxy").empty()) return "";
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return "";
+#endif
+    std::vector<std::future<bool>> found;
+    for (const char* s : sites)
+        found.push_back(std::async(std::launch::async, [s] {
+            addrinfo hints{}, *res = nullptr;
+            hints.ai_socktype = SOCK_STREAM;
+            bool ok = getaddrinfo(s, "443", &hints, &res) == 0;
+            if (res) freeaddrinfo(res);
+            return ok;
+        }));
+    std::string bad;
+    for (size_t i = 0; i < found.size(); i++)
+        if (!found[i].get() && bad.empty()) bad = sites[i];
+#if defined(_WIN32)
+    WSACleanup();
+#endif
+    return bad;
+}
 
 bool vulkan_loader() {
     if (!SDL_Vulkan_LoadLibrary(nullptr)) return false;
@@ -638,10 +722,27 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
 #if defined(_WIN32)
     // tools/setup_acnh.py fetches LLVM (clang-cl), SDL3, CMake and Ninja itself: Python, Visual Studio's C++ tools and
     // a Vulkan driver are what it needs from the system.
-    add("launcher.check.scripts", !repo_root().empty(), Status::Error, found, tr("launcher.err.no_repo"));
-    add("launcher.check.python", in_path("py.exe") || in_path("python.exe"), Status::Error, found, missing);
+    const std::string root = repo_root();
+    add("launcher.check.scripts", !root.empty(), Status::Error, found, tr("launcher.err.no_repo"));
+    // The version the setup will really run with: one too old, or the Store's alias, would stop it at its first step.
+    std::string py = python_version(root);
+    int major = 0, minor = 0;
+    std::sscanf(py.c_str(), "%d.%d", &major, &minor);
+    add("launcher.check.python", major == 3 && minor >= 11, Status::Error, "Python " + py,
+        py.empty() ? missing : trf("launcher.check.python_old", "Python " + py));
     add("launcher.check.compiler", msvc_tools(), Status::Error, found, missing);
     add("launcher.check.vulkan", vulkan_loader(), Status::Error, found, missing);
+    // vcpkg builds the movie decoders from a git clone: without git the setup goes on, the movies are black.
+    std::error_code ec;
+    bool movie_libs = !root.empty() && fs::exists(u8(root) / "private" / "third_party" / "vcpkg" / "vcpkg.exe", ec);
+    add("launcher.check.movie", movie_libs || in_path("git.exe"), Status::Warning, found, tr("launcher.check.git_missing"));
+    // The tools come from the internet the first time (about 1.5 GB): without it the setup stops at its first step.
+    // Once they are here a rebuild mostly does without, so then it is only a warning.
+    std::string site = unreachable_site();
+    bool have_tools = !root.empty() && fs::exists(u8(root) / "private" / "venv", ec) &&
+                      fs::exists(u8(root) / "private" / "build" / "spirv_harness", ec);
+    add("launcher.check.internet", site.empty(), have_tools ? Status::Warning : Status::Error, found,
+        trf("launcher.check.internet_missing", site));
 #else
     add("launcher.check.scripts", !repo_root().empty(), Status::Error, found, tr("launcher.err.no_repo"));
     add("launcher.check.compiler", in_path("clang") && in_path("clang++"), Status::Error, found, missing);
@@ -649,6 +750,8 @@ std::vector<Prereq> check_prerequisites(const std::string& install_dir) {
     add("launcher.check.tools", in_path("curl") && in_path("tar") && in_path("bash"), Status::Error, found, missing);
     add("launcher.check.sdl", sdl3_dev_files(), Status::Error, found, missing);
     add("launcher.check.vulkan", vulkan_loader(), Status::Error, found, missing);
+    std::string site = unreachable_site();
+    add("launcher.check.internet", site.empty(), Status::Warning, found, trf("launcher.check.internet_missing", site));
 #if defined(__APPLE__)
     std::error_code ec;
     bool movie = (std::system("pkg-config --exists vpx vorbis >/dev/null 2>&1") == 0) ||
