@@ -780,10 +780,10 @@ std::string installed_python() {
 }
 
 std::vector<std::string> python_command(const std::string& root) {
+    // Never the repository's venv (private\venv): the setup makes it again when it was moved from another folder, and
+    // Windows does not let it delete the python.exe it runs on.
+    (void)root;
     if (const char* p = std::getenv("NX_LAUNCHER_PYTHON"); p && *p) return {p};
-    std::error_code ec;
-    fs::path venv = u8(root) / "private" / "venv" / "Scripts" / "python.exe";
-    if (!root.empty() && fs::is_regular_file(venv, ec)) return {str(venv)};
     if (std::string py = path_of("py.exe"); !py.empty()) return {py, "-3"};
     if (std::string py = path_of("python.exe"); !py.empty()) return {py};
     // Installed without "Add to PATH" (winget's default) and without the py launcher: found where it is.

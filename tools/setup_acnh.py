@@ -288,17 +288,27 @@ def main():
     py = os.path.join(P, "venv", "Scripts" if WIN else "bin", "python.exe" if WIN else "python")
     # A venv's tools (cmake, ninja, pip) start the Python of the folder it was made in: moved with the private folder (a
     # newer release unpacked elsewhere) they point at the old one. Made again here: its packages are a small download.
-    venv_root = os.path.join(P, "venv", "acnhrecomp_root.txt")
+    venv = os.path.join(P, "venv")
+    venv_root = os.path.join(venv, "acnhrecomp_root.txt")
+    # This setup running on the venv's own Python (an older launcher started it so) cannot delete it: Windows keeps a
+    # running python.exe, and only pyvenv.cfg would go, leaving a venv that no longer starts.
+    inside = os.path.normcase(os.path.abspath(sys.prefix)) == os.path.normcase(os.path.abspath(venv))
     if os.path.exists(py):
         made_in = open(venv_root, encoding="utf-8").read().strip() if os.path.exists(venv_root) else ""
-        runs = subprocess.call([os.path.join(os.path.dirname(py), "cmake.exe" if WIN else "cmake"), "--version"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0 if made_in != ROOT else True
+        runs = os.path.exists(os.path.join(venv, "pyvenv.cfg")) and (made_in == ROOT or subprocess.call(
+            [os.path.join(os.path.dirname(py), "cmake.exe" if WIN else "cmake"), "--version"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0)
         if not runs:
+            if inside:
+                fail(f"the Python environment in {venv} was made in another folder and this setup runs on it: "
+                     "delete that folder and choose Try again")
             print("the Python environment was made in another folder: making it again here", flush=True)
-            shutil.rmtree(os.path.join(P, "venv"), ignore_errors=True)
+            shutil.rmtree(venv, ignore_errors=True)
+            if os.path.exists(venv):
+                fail(f"{venv} could not be deleted (a program still uses it): delete it and choose Try again")
     if not os.path.exists(py):
         need_net("pypi.org")
-        run([sys.executable, "-m", "venv", os.path.join(P, "venv")])
+        run([getattr(sys, "_base_executable", "") or sys.executable if inside else sys.executable, "-m", "venv", venv])
     if subprocess.call([py, "-c", "import capstone, lz4, zstandard, fontTools, cmake, ninja"],
                        stderr=subprocess.DEVNULL):
         need_net("pypi.org")
