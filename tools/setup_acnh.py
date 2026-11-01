@@ -17,6 +17,7 @@ Stages: tools -> import -> version -> recompile -> shaders -> fonts -> build. Ev
 private/third_party and uses the Visual Studio C++ build tools found by vswhere (the Windows SDK and C runtime).
 """
 import argparse
+import glob
 import os
 import platform
 import re
@@ -395,8 +396,17 @@ def main():
     harness = os.path.join(P, "build", "spirv_harness", "bin", "Release", "net10.0", "spirv_harness.dll")
     if not os.path.exists(harness) or force("harness"):
         need_net("api.nuget.org")  # the build restores its packages from NuGet
+        # A "Platform" variable (set by vcvars, or system-wide on some PCs) becomes MSBuild's $(Platform) and moves
+        # the output to bin/<platform>/Release, where nothing looks for it: build without it, as AnyCPU.
+        dn_env = {k: v for k, v in env.items() if k.upper() != "PLATFORM"}
         run([dotnet, "build", "tools/maxwell/spirv_harness/SpirvHarness.csproj", "-c", "Release", "-m:4"],
-            log=os.path.join(logs, "harness.log"), env=env)
+            log=os.path.join(logs, "harness.log"), env=dn_env)
+    if not os.path.exists(harness):
+        found = glob.glob(os.path.join(P, "build", "spirv_harness", "bin", "**", "net10.0", "spirv_harness.dll"),
+                          recursive=True)
+        if not found:
+            fail(f"the shader translator built, but {harness} is not there (see {os.path.join(logs, 'harness.log')})")
+        harness = found[0]
     imp_build = os.path.join(P, "build", "importer")
     same_source(imp_build, os.path.join(ROOT, "tools", "importer"))
     if not os.path.exists(os.path.join(imp_build, "build.ninja")):
